@@ -155,3 +155,11 @@ list(TRANSFORM SHIELD_LIST PREPEND "COMMAND;${CMAKE_COMMAND};-E;echo;"
 )
 
 add_custom_target(shields ${shields_target_cmd} USES_TERMINAL)
+
+# ZMK: Load post_boards_shields.cmake from BOARD_ROOT directories after
+# shield processing so that the keymap overlay can be discovered and applied.
+foreach(root ${BOARD_ROOT})
+  if(EXISTS ${root}/boards/post_boards_shields.cmake)
+    include(${root}/boards/post_boards_shields.cmake)
+  endif()
+endforeach()
