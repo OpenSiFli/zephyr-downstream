@@ -96,6 +96,7 @@ static void dma_sf32lb_isr(const struct device *dev, uint8_t channel)
 	isr = sys_read32(config->dmac + DMAC_ISR);
 	if ((isr & DMAC_ISR_TCIF(channel)) != 0U) {
 		status = DMA_STATUS_COMPLETE;
+		atomic_clear_bit(data->status, channel);
 	} else if ((isr & DMAC_ISR_HTIF(channel)) != 0U) {
 		status = DMA_STATUS_HALF_COMPLETE;
 		atomic_clear_bit(data->status, channel);

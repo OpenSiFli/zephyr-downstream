@@ -2,7 +2,12 @@
  * Copyright 2025 Core Devices LLC
  * SPDX-License-Identifier: Apache-2.0
  */
-
+#pragma GCC optimize("Og")
+/*
+ * Temporary workaround: this driver currently only operates correctly when
+ * compiled with `#pragma GCC optimize("Og")`. The underlying cause is
+ * unknown; further investigation is required to remove this workaround.
+ */
 #define DT_DRV_COMPAT sifli_sf32lb_mpi_qspi_nor
 
 #include "jesd216.h"
@@ -355,7 +360,8 @@ static int flash_sf32lb_mpi_qspi_nor_write(const struct device *dev, off_t offse
 		/* wait for DMA completion (polling) */
 		do {
 			ret = sf32lb_dma_get_status_dt(&data->dma, &status);
-		} while ((ret == 0) && status.busy);
+		// } while ((ret == 0) && status.busy);
+		} while ((ret == 0) && status.pending_length > 0);
 
 		(void)sf32lb_dma_stop_dt(&data->dma);
 
