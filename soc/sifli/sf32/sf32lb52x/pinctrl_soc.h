@@ -38,6 +38,7 @@ typedef uint32_t pinctrl_soc_pin_t;
 #define SF32LB_PE_MSK BIT(4U)
 #define SF32LB_PS_MSK BIT(5U)
 #define SF32LB_IE_MSK BIT(6U)
+#define SF32LB_SR_MSK BIT(8U)
 #define SF32LB_DS_MSK GENMASK(10U, 9U)
 
 /* Drive strength enum index position and mask (stored in bits 9-11) */
@@ -51,7 +52,8 @@ typedef uint32_t pinctrl_soc_pin_t;
  * to handle in the driver than in the device tree generation.
  */
 #define SF32LB_PINMUX_CFG_MSK                                                                      \
-	(SF32LB_FSEL_MSK | SF32LB_PE_MSK | SF32LB_PS_MSK | SF32LB_IE_MSK | SF32LB_DS_MSK)
+	(SF32LB_FSEL_MSK | SF32LB_PE_MSK | SF32LB_PS_MSK | SF32LB_IE_MSK | SF32LB_SR_MSK |     \
+	 SF32LB_DS_MSK)
 
 #define Z_PINCTRL_STATE_PIN_INIT(node_id, prop, idx)                                               \
 	(DT_PROP_BY_IDX(node_id, prop, idx) |                                                      \
@@ -59,6 +61,7 @@ typedef uint32_t pinctrl_soc_pin_t;
 		    (DT_PROP(node_id, bias_pull_up) | DT_PROP(node_id, bias_pull_down))) |         \
 	 FIELD_PREP(SF32LB_PS_MSK, DT_PROP(node_id, bias_pull_up)) |                               \
 	 FIELD_PREP(SF32LB_IE_MSK, DT_PROP(node_id, input_enable)) |                               \
+	 COND_CODE_0(DT_PROP(node_id, slew_rate), (SF32LB_SR_MSK), (0U)) |                         \
 	 FIELD_PREP(SF32LB_DS_IDX_MSK, DT_ENUM_IDX(node_id, drive_strength))),
 
 #define Z_PINCTRL_STATE_PINS_INIT(node_id, prop)                                                   \
