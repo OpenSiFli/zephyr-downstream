@@ -27,10 +27,10 @@ extern "C" {
  *   - 5: Pull select (0=pulldown, 1=pullup)
  *   - 6: Input enable (0=disable, 1=enable)
  *   - 7: Input select (0=normal, 1=schmitt trigger)
- *   - 8: Slew rate on most pads (0=fast, 1=slow); PA39-PA42 repurpose this as
- *        MODE (0=GPIO, 1=I2C)
- *   - 9-10: Drive strength {DS0, DS1} (0-3), DS0 is high bit, default=2 (4mA)
- * - 11-13: Drive strength enum index (0-4 for 2/4/8/12/20 mA)
+ *   - 8: Slew rate (0=slow, 1=fast)
+ * 	 - 9-11: Drive strength (0-4, 0=2mA, 1=8mA, 2=4mA, 3=12mA, 4=20mA; pin39-42 only support
+ * 4mA/20mA, normal pins do not support 20mA)
+ *   - 12-13: Port (SA, PA, ...)
  * - 14-31: Location, port, pad, PINR register field and offset.
  */
 typedef uint32_t pinctrl_soc_pin_t;
@@ -41,16 +41,15 @@ typedef uint32_t pinctrl_soc_pin_t;
 #define SF32LB_SR_MSK BIT(8U)
 #define SF32LB_DS_MSK GENMASK(10U, 9U)
 
-/* Drive strength enum index position and mask (stored in bits 11-13) */
-#define SF32LB_DS_IDX_POS 11U
-#define SF32LB_DS_IDX_MSK GENMASK(13U, 11U)
+/* Drive strength enum index position and mask (stored in bits 9-11) */
+#define SF32LB_DS_IDX_POS 9U
+#define SF32LB_DS_IDX_MSK GENMASK(11U, 9U)
 
 /*
  * Pin configuration mask for bits that should be modified.
- * Bit 8 is SR on most pads and MODE on PA39-PA42. The pinctrl driver masks it
- * out for PA39-PA42 and handles MODE separately.
- * IS (input-schmitt) is preserved from hardware defaults.
- * DS bits (9-10) are set by driver after mA-to-register conversion.
+ * SR (slew-rate) and IS (input-schmitt) are preserved from hardware defaults.
+ * DS_IDX (drive strength) is preserved since it requires remapping for certain pins and is easier
+ * to handle in the driver than in the device tree generation.
  */
 #define SF32LB_PINMUX_CFG_MSK                                                                      \
 	(SF32LB_FSEL_MSK | SF32LB_PE_MSK | SF32LB_PS_MSK | SF32LB_IE_MSK | SF32LB_SR_MSK |     \
