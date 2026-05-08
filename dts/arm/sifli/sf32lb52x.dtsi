@@ -10,7 +10,6 @@
 
 #include <zephyr/dt-bindings/clock/sf32lb52x-clocks.h>
 #include <zephyr/dt-bindings/pinctrl/sf32lb52x-pinctrl.h>
-#include <zephyr/dt-bindings/regulator/sf32lb52x-ldo.h>
 
 / {
 	cpus {
@@ -392,25 +391,20 @@
 
 			regulators {
 				compatible = "sifli,sf32lb52x-ldo";
-				#address-cells = <1>;
-				#size-cells = <0>;
 
-				ldo18: regulator@0 {
-					reg = <SF32LB52X_LDO18>;
+				ldo1_1v8: LDO1_1V8 {
 					regulator-min-microvolt = <1800000>;
 					regulator-max-microvolt = <1800000>;
 					status = "disabled";
 				};
 
-				ldo2_3v3: regulator@1 {
-					reg = <SF32LB52X_LDO2_3V3>;
+				ldo2_3v3: LDO2_3V3 {
 					regulator-min-microvolt = <3300000>;
 					regulator-max-microvolt = <3300000>;
 					status = "disabled";
 				};
 
-				ldo3_3v3: regulator@2 {
-					reg = <SF32LB52X_LDO3_3V3>;
+				ldo3_3v3: LDO3_3V3 {
 					regulator-min-microvolt = <3300000>;
 					regulator-max-microvolt = <3300000>;
 					status = "disabled";

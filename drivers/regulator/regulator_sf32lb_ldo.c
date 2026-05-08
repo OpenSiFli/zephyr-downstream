@@ -17,7 +17,7 @@
 
 #include <register.h>
 
-LOG_MODULE_REGISTER(regulator_sf32lb, CONFIG_REGULATOR_LOG_LEVEL);
+LOG_MODULE_REGISTER(regulator_sf32lb_ldo, CONFIG_REGULATOR_LOG_LEVEL);
 
 /* LDO descriptor with enable and power-down masks */
 struct sf32lb_ldo_desc {
@@ -106,7 +106,7 @@ static int regulator_sf32lb_init(const struct device *dev)
 	return regulator_common_init(dev, false);
 }
 
-/* LDO descriptors, indexed by the devicetree child "reg" property. */
+/* LDO descriptors: index 0 = ldo1_1v8, 1 = ldo2_3v3, 2 = ldo3_3v3. */
 static const struct sf32lb_ldo_desc sf32lb_ldo_descs[] = {
 	{
 		.enable_mask = PMUC_PERI_LDO_EN_LDO18_Msk,
@@ -128,22 +128,33 @@ static const struct sf32lb_ldo_desc sf32lb_ldo_descs[] = {
 #define SF32LB_LDO_DATA_NAME(node_id) _CONCAT(data_, DT_DEP_ORD(node_id))
 #define SF32LB_LDO_CONF_NAME(node_id) _CONCAT(config_, DT_DEP_ORD(node_id))
 
-#define SF32LB_LDO_DESC(node_id) (&sf32lb_ldo_descs[DT_PROP(node_id, reg)])
-
-#define REGULATOR_SF32LB_DEFINE(node_id)                                                           \
+/* Define one LDO device for node_id, using an explicit descriptor index idx. */
+#define REGULATOR_SF32LB_DEFINE_BY_IDX(node_id, idx)                                               \
 	static struct regulator_sf32lb_data SF32LB_LDO_DATA_NAME(node_id);                         \
                                                                                                    \
 	static const struct regulator_sf32lb_config SF32LB_LDO_CONF_NAME(node_id) = {              \
 		.common = REGULATOR_DT_COMMON_CONFIG_INIT(node_id),                                \
 		.reg = DT_REG_ADDR(DT_PARENT(DT_PARENT(node_id))) + SF32LB_PERI_LDO_OFFSET,        \
-		.desc = SF32LB_LDO_DESC(node_id),                                                  \
+		.desc = &sf32lb_ldo_descs[idx],                                                    \
 	};                                                                                         \
                                                                                                    \
 	DEVICE_DT_DEFINE(node_id, regulator_sf32lb_init, NULL, &SF32LB_LDO_DATA_NAME(node_id),     \
 			 &SF32LB_LDO_CONF_NAME(node_id), PRE_KERNEL_1,                             \
 			 CONFIG_REGULATOR_SF32LB_LDO_INIT_PRIORITY, &regulator_sf32lb_api);
 
+/*
+ * Conditionally define the device for child node 'label' of instance inst.
+ * Only expands when that child node has status = "okay".
+ * idx is the fixed index into sf32lb_ldo_descs[].
+ */
+#define REGULATOR_SF32LB_DEFINE_COND(inst, label, idx)                                             \
+	COND_CODE_1(DT_NODE_HAS_STATUS(DT_INST_CHILD(inst, label), okay),				\
+		    (REGULATOR_SF32LB_DEFINE_BY_IDX(DT_INST_CHILD(inst, label), idx)),		\
+		    ())
+
 #define REGULATOR_SF32LB_DEFINE_ALL(inst)                                                          \
-	DT_INST_FOREACH_CHILD_STATUS_OKAY(inst, REGULATOR_SF32LB_DEFINE)
+	REGULATOR_SF32LB_DEFINE_COND(inst, ldo1_1v8, 0)                                            \
+	REGULATOR_SF32LB_DEFINE_COND(inst, ldo2_3v3, 1)                                            \
+	REGULATOR_SF32LB_DEFINE_COND(inst, ldo3_3v3, 2)
 
 DT_INST_FOREACH_STATUS_OKAY(REGULATOR_SF32LB_DEFINE_ALL)

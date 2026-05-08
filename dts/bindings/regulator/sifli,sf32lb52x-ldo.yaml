@@ -1,14 +1,15 @@
 # Copyright (c) 2025 SiFli Technologies(Nanjing) Co., Ltd
 # SPDX-License-Identifier: Apache-2.0
 
-description: |
-  SiFli SF32LB52x peripheral LDO regulators.
+title: SiFli SF32LB52x Peripheral LDO Regulators
 
+description: |
   This node is a child of the PMUC (Power Management Unit Controller) and
   provides access to the internal peripheral LDOs controlled by the PERI_LDO
   register (offset 0x5c in PMUC).
 
-  Example:
+examples:
+  - |
     #include <zephyr/dt-bindings/regulator/sf32lb52x-ldo.h>
 
     pmuc: syscon@500ca000 {
@@ -17,14 +18,21 @@ description: |
 
       regulators {
         compatible = "sifli,sf32lb52x-ldo";
-        #address-cells = <1>;
-        #size-cells = <0>;
 
-        ldo18: regulator@0 {
-          reg = <SF32LB52X_LDO18>;
+        ldo1_1v8: LDO1_1V8 {
           regulator-min-microvolt = <1800000>;
           regulator-max-microvolt = <1800000>;
           regulator-boot-on;
+        };
+
+        ldo2_3v3: LDO2_3V3 {
+          regulator-min-microvolt = <3300000>;
+          regulator-max-microvolt = <3300000>;
+        };
+
+        ldo3_3v3: LDO3_3V3 {
+          regulator-min-microvolt = <3300000>;
+          regulator-max-microvolt = <3300000>;
         };
       };
     };
@@ -32,13 +40,6 @@ description: |
 compatible: "sifli,sf32lb52x-ldo"
 
 include: base.yaml
-
-properties:
-  "#address-cells":
-    const: 1
-
-  "#size-cells":
-    const: 0
 
 child-binding:
   include:
@@ -49,15 +50,3 @@ child-binding:
         - regulator-boot-on
         - regulator-min-microvolt
         - regulator-max-microvolt
-
-  properties:
-    reg:
-      type: int
-      required: true
-      enum:
-        - 0  # SF32LB52X_LDO18
-        - 1  # SF32LB52X_LDO2_3V3
-        - 2  # SF32LB52X_LDO3_3V3
-      description: |
-        Peripheral LDO index. Include the bindings header file
-        `<zephyr/dt-bindings/regulator/sf32lb52x-ldo.h>` to use named symbols.
