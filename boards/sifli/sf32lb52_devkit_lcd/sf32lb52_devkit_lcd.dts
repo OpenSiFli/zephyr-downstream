@@ -62,6 +62,13 @@
 		rtc = &rtc;
 		watchdog0 = &wdt;
 	};
+
+	psram: psram@60000000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x60000000 DT_SIZE_M(8)>;
+		zephyr,memory-region = "PSRAM";
+		zephyr,memory-attr = <(DT_MEM_ARM(ATTR_MPU_RAM))>;
+	};
 };
 
 &cpu0 {
@@ -83,10 +90,16 @@
 	sifli,pdiv1 = <1>;
 	sifli,pdiv2 = <6>;
 	sifli,sys-clk-src = "dll1";
+	sifli,mpi1-clk-src = "dll2";
 
 	dll1 {
 		status = "okay";
 		clock-frequency = <DT_FREQ_M(240)>;
+	};
+
+	dll2 {
+		status = "okay";
+		clock-frequency = <DT_FREQ_M(288)>;
 	};
 };
 
@@ -103,6 +116,22 @@
 };
 
 &dmac {
+	status = "okay";
+};
+
+&ldo1_1v8 {
+	regulator-boot-on;
+	status = "okay";
+};
+
+&mpi1 {
+	compatible = "sifli,sf32lb-mpi-opi-psram";
+	/* SF32LB525UC6 has 8MB internal OPI PSRAM */
+	reg = <0x50041000 0x1000>, <0x60000000 DT_SIZE_M(8)>;
+	reg-names = "ctrl", "psram";
+	pinctrl-0 = <&mpi1_default>;
+	pinctrl-names = "default";
+	power-supply = <&ldo1_1v8>;
 	status = "okay";
 };
 
