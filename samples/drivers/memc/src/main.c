@@ -54,6 +54,10 @@ LOG_MODULE_REGISTER(main);
 #define MSPI_BUS DT_BUS(MEMC_DEV)
 #define MEMC_BASE ((void *)DT_REG_ADDR_BY_IDX(MSPI_BUS, 1))
 #define MEMC_SIZE (DT_PROP(MEMC_DEV, size) / 8)
+#elif DT_HAS_COMPAT_STATUS_OKAY(sifli_sf32lb_mpi_opi_psram)
+#define MEMC_DEV DT_ALIAS(psram0)
+#define MEMC_BASE ((void *)DT_REG_ADDR_BY_NAME(MEMC_DEV, psram))
+#define MEMC_SIZE DT_REG_SIZE_BY_NAME(MEMC_DEV, psram)
 #else
 #error At least one driver should be selected!
 #endif

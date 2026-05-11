@@ -130,11 +130,18 @@
 
 		mpi1: memory-controller@50041000 {
 			/*
-			 * configure compatible depending on memory type, choices:
-			 * - sifli,sf32lb-mpi-qspi-nor
+			 * Configure compatible depending on memory type, choices:
+			 * - sifli,sf32lb-mpi-qspi-nor (for external NOR flash)
+			 * - sifli,sf32lb-mpi-opi-psram (for internal OPI PSRAM)
+			 *
+			 * For chips with internal PSRAM (523/525/527/52e/52g/52j),
+			 * configure as OPI PSRAM with appropriate size:
+			 * - 523/52e: 4MB
+			 * - 525/52g: 8MB
+			 * - 527/52j: 16MB
 			 */
 			reg = <0x50041000 0x1000>, <0x10000000 DT_SIZE_M(32)>;
-			reg-names = "ctrl", "nor";
+			reg-names = "ctrl", "psram";
 			clocks = <&rcc_clk SF32LB52X_CLOCK_MPI1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -336,6 +343,7 @@
 			sifli,pmuc = <&pmuc>;
 			sifli,bank-size = <32>;
 			sifli,bank-offsets = <0x30 0x50 0x70 0x90>;
+			status = "disabled";
 
 			nvmem-layout {
 				compatible = "fixed-layout";
@@ -354,7 +362,6 @@
 					#nvmem-cell-cells = <0>;
 				};
 			};
-			status = "disabled";
 		};
 
 		cfg: syscon@5000b000 {
@@ -394,6 +401,9 @@
 		pmuc: syscon@500ca000 {
 			compatible = "sifli,sf32lb52x-pmuc", "syscon";
 			reg = <0x500ca000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges = <0 0x500ca000 0x1000>;
 
 			regulators {
 				compatible = "sifli,sf32lb52x-ldo";
@@ -415,9 +425,7 @@
 					regulator-max-microvolt = <3300000>;
 					status = "disabled";
 				};
-			#address-cells = <1>;
-			#size-cells = <1>;
-			ranges = <0 0x500ca000 0x1000>;
+			};
 
 			pmuc_clk: clock-controller@0 {
 				compatible = "sifli,sf32lb-pmuc-clk";
