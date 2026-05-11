@@ -12,10 +12,13 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/cache.h>
 #include <zephyr/sys/barrier.h>
+#include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/irq.h>
 #include <string.h>
+
+#include <ll_aes.h>
 
 #include "crypto_sf32lb_priv.h"
 
@@ -48,7 +51,8 @@ static void crypto_sifli_isr(const struct device *dev)
 	const struct crypto_sifli_config *config = dev->config;
 	struct crypto_sifli_data *data = dev->data;
 	uintptr_t base = config->base;
-	uint32_t irq_status = sys_read32(base + AES_IRQ_OFFSET);
+	AES_ACC_TypeDef *aes = (AES_ACC_TypeDef *)base;
+	uint32_t irq_status = ll_aes_get_irq_status(aes);
 	int aes_status = 0;
 	int hash_status = 0;
 
@@ -57,16 +61,13 @@ static void crypto_sifli_isr(const struct device *dev)
 	if (irq_status &
 	    (AES_ACC_IRQ_DONE_STAT | AES_ACC_IRQ_BUS_ERR_STAT | AES_ACC_IRQ_SETUP_ERR_STAT)) {
 		/* Clear AES IRQ status */
-		sys_write32(irq_status & (AES_ACC_IRQ_DONE_STAT | AES_ACC_IRQ_BUS_ERR_STAT |
-					  AES_ACC_IRQ_SETUP_ERR_STAT),
-			    base + AES_IRQ_OFFSET);
+		ll_aes_clear_irq(aes, irq_status & (LL_AES_IRQ_DONE | LL_AES_IRQ_BUS_ERR |
+						    LL_AES_IRQ_SETUP_ERR));
 
 		/* Disable AES IRQ mask */
-		sys_write32(sys_read32(base + AES_SETTING_OFFSET) &
-				    ~(AES_ACC_SETTING_DONE_IRQ_MASK |
-				      AES_ACC_SETTING_BUS_ERR_IRQ_MASK |
-				      AES_ACC_SETTING_SETUP_ERR_IRQ_MASK),
-			    base + AES_SETTING_OFFSET);
+		ll_aes_disable_it_done(aes);
+		ll_aes_disable_it_bus_err(aes);
+		ll_aes_disable_it_setup_err(aes);
 
 		/* Check for errors */
 		if (irq_status & (AES_ACC_IRQ_BUS_ERR_STAT | AES_ACC_IRQ_SETUP_ERR_STAT)) {
@@ -96,6 +97,7 @@ static void crypto_sifli_isr(const struct device *dev)
 #endif /* CONFIG_CRYPTO_SIFLI_AES */
 
 #if defined(CONFIG_CRYPTO_SIFLI_HASH)
+	/* LL gap: HASH registers share AES_ACC but are not covered by ll_aes.h. */
 	/* Handle HASH interrupts */
 	if (irq_status & (AES_ACC_IRQ_HASH_DONE_STAT | AES_ACC_IRQ_HASH_BUS_ERR_STAT |
 			  AES_ACC_IRQ_HASH_PAD_ERR_STAT)) {
@@ -149,22 +151,56 @@ static void crypto_sifli_isr(const struct device *dev)
 
 #if defined(CONFIG_CRYPTO_SIFLI_AES)
 
+static uint32_t crypto_sifli_aes_ll_mode(uint32_t mode)
+{
+	switch (mode) {
+	case SIFLI_AES_MODE_CTR:
+		return LL_AES_MODE_CTR;
+	case SIFLI_AES_MODE_CBC:
+		return LL_AES_MODE_CBC;
+	case SIFLI_AES_MODE_ECB:
+	default:
+		return LL_AES_MODE_ECB;
+	}
+}
+
+static void crypto_sifli_aes_set_op(AES_ACC_TypeDef *aes, bool enc)
+{
+	mem_addr_t aes_setting = (mem_addr_t)&aes->AES_SETTING;
+	uint32_t setting;
+
+	/* LL gap: ll_aes.h has full core config but no standalone operation setter. */
+	setting = sys_read32(aes_setting);
+	setting &= ~AES_ACC_AES_SETTING_AES_OP_MODE;
+	setting |= enc ? LL_AES_OP_ENCRYPT : LL_AES_OP_DECRYPT;
+	sys_write32(setting, aes_setting);
+}
+
 static inline bool crypto_sifli_aes_busy(uint32_t base)
 {
-	return sys_test_bit(base + AES_STATUS_OFFSET, AES_ACC_STATUS_BUSY_Pos);
+	return ll_aes_is_active_flag_busy((AES_ACC_TypeDef *)base) != 0U;
 }
 
 static void crypto_sifli_aes_reset(uint32_t base)
 {
-	sys_set_bit(base + AES_COMMAND_OFFSET, AES_ACC_COMMAND_AES_ACC_RESET_Pos);
-	sys_clear_bit(base + AES_COMMAND_OFFSET, AES_ACC_COMMAND_AES_ACC_RESET_Pos);
+	AES_ACC_TypeDef *aes = (AES_ACC_TypeDef *)base;
+
+	ll_aes_reset(aes);
+	/* LL gap: ll_aes_reset() asserts reset but does not expose a deassert helper. */
+	sys_clear_bits((mem_addr_t)&aes->COMMAND, AES_ACC_COMMAND_AES_ACC_RESET);
 }
 
 static int crypto_sifli_aes_init(uint32_t base, const uint32_t *key, int key_size,
 				 const uint32_t *iv, uint32_t mode)
 {
-	int ks;
-	uint32_t setting = 0;
+	AES_ACC_TypeDef *aes = (AES_ACC_TypeDef *)base;
+	uint32_t key_len;
+	ll_aes_core_config_t ll_cfg = {
+		.key_sel = LL_AES_KEYSEL_EXT,
+		.algo = LL_AES_ALGO_AES,
+		.op_mode = LL_AES_OP_DECRYPT,
+		.bypass = LL_AES_BYPASS_DISABLE,
+	};
 
 	if (crypto_sifli_aes_busy(base)) {
 		crypto_sifli_aes_reset(base);
@@ -172,13 +208,13 @@ static int crypto_sifli_aes_init(uint32_t base, const uint32_t *key, int key_siz
 
 	switch (key_size) {
 	case 16:
-		ks = SIFLI_AES_KEY_LEN_128;
+		key_len = LL_AES_KEYLEN_128;
 		break;
 	case 24:
-		ks = SIFLI_AES_KEY_LEN_192;
+		key_len = LL_AES_KEYLEN_192;
 		break;
 	case 32:
-		ks = SIFLI_AES_KEY_LEN_256;
+		key_len = LL_AES_KEYLEN_256;
 		break;
 	default:
 		LOG_ERR("Unsupported key size: %d", key_size);
@@ -189,27 +225,19 @@ static int crypto_sifli_aes_init(uint32_t base, const uint32_t *key, int key_siz
 	if (key != NULL) {
 		int key_words = key_size / sizeof(uint32_t);
 
-		for (int i = 0; i < key_words; i++) {
-			sys_write32(key[i], base + AES_EXT_KEY_W0_OFFSET + (i * sizeof(uint32_t)));
-		}
+		ll_aes_set_key_words(aes, key, key_words);
 	} else {
 		/* Use internal root key */
-		setting |= AES_ACC_AES_SETTING_KEY_SEL;
+		ll_cfg.key_sel = LL_AES_KEYSEL_ROOT;
 	}
 
-	/* Set mode and key length */
-	setting |= (mode & AES_ACC_AES_SETTING_AES_MODE_Msk);
-	setting |=
-		((ks << AES_ACC_AES_SETTING_AES_LENGTH_Pos) & AES_ACC_AES_SETTING_AES_LENGTH_Msk);
-
-	sys_write32(setting, base + AES_AES_SETTING_OFFSET);
+	ll_cfg.mode = crypto_sifli_aes_ll_mode(mode);
+	ll_cfg.key_len = key_len;
+	ll_aes_config_core(aes, &ll_cfg);
 
 	/* Load IV for CBC/CTR modes */
 	if (mode != SIFLI_AES_MODE_ECB && iv != NULL) {
-		sys_write32(iv[0], base + AES_IV_W0_OFFSET);
-		sys_write32(iv[1], base + AES_IV_W1_OFFSET);
-		sys_write32(iv[2], base + AES_IV_W2_OFFSET);
-		sys_write32(iv[3], base + AES_IV_W3_OFFSET);
+		ll_aes_set_iv_words(aes, iv);
 	}
 
 	return 0;
@@ -219,28 +247,23 @@ static int crypto_sifli_aes_init(uint32_t base, const uint32_t *key, int key_siz
 static int crypto_sifli_aes_run(uint32_t base, uint8_t enc, uint8_t *in_data, uint8_t *out_data,
 				int size)
 {
-	uint32_t aes_setting;
+	AES_ACC_TypeDef *aes = (AES_ACC_TypeDef *)base;
 
 	/* Disable interrupts for sync operation */
-	sys_write32(0, base + AES_SETTING_OFFSET);
+	ll_aes_disable_it_done(aes);
+	ll_aes_disable_it_bus_err(aes);
+	ll_aes_disable_it_setup_err(aes);
 
 	/* Set DMA addresses and size */
-	sys_write32((uint32_t)in_data, base + AES_DMA_IN_OFFSET);
-	sys_write32((uint32_t)out_data, base + AES_DMA_OUT_OFFSET);
-	sys_write32((size + 15) >> 4, base + AES_DMA_DATA_OFFSET);
+	ll_aes_set_dma_in(aes, (uint32_t)in_data);
+	ll_aes_set_dma_out(aes, (uint32_t)out_data);
+	ll_aes_set_dma_blocks(aes, (size + 15) >> 4);
 
 	/* Set encrypt/decrypt mode */
-	aes_setting = sys_read32(base + AES_AES_SETTING_OFFSET);
-	if (enc) {
-		aes_setting |= AES_ACC_AES_SETTING_AES_OP_MODE;
-	} else {
-		aes_setting &= ~AES_ACC_AES_SETTING_AES_OP_MODE;
-	}
-	sys_write32(aes_setting, base + AES_AES_SETTING_OFFSET);
+	crypto_sifli_aes_set_op(aes, enc != 0U);
 
 	/* Start operation */
-	sys_write32(sys_read32(base + AES_COMMAND_OFFSET) | AES_ACC_COMMAND_START,
-		    base + AES_COMMAND_OFFSET);
+	ll_aes_start(aes);
 
 	/* Wait for completion */
 	if (!WAIT_FOR(crypto_sifli_aes_busy(base) != true, CRYPTO_SIFLI_TIMEOUT_US,
@@ -250,7 +273,7 @@ static int crypto_sifli_aes_run(uint32_t base, uint8_t enc, uint8_t *in_data, ui
 	}
 
 	/* Check for errors */
-	uint32_t irq = sys_read32(base + AES_IRQ_OFFSET);
+	uint32_t irq = ll_aes_get_irq_status(aes);
 
 	if (irq & (AES_ACC_IRQ_BUS_ERR_STAT | AES_ACC_IRQ_SETUP_ERR_STAT)) {
 		LOG_ERR("AES error: IRQ=0x%08x", irq);
@@ -269,29 +292,23 @@ static int crypto_sifli_aes_run_async(const struct device *dev, uint8_t enc, uin
 	const struct crypto_sifli_config *config = dev->config;
 	struct crypto_sifli_data *data = dev->data;
 	uintptr_t base = config->base;
-	uint32_t aes_setting;
+	AES_ACC_TypeDef *aes = (AES_ACC_TypeDef *)base;
 
 	/* Clear pending IRQ */
-	sys_write32(sys_read32(base + AES_IRQ_OFFSET), base + AES_IRQ_OFFSET);
+	ll_aes_clear_irq(aes, ll_aes_get_irq_status(aes));
 
 	/* Enable IRQ masks */
-	sys_write32(AES_ACC_SETTING_DONE_IRQ_MASK | AES_ACC_SETTING_BUS_ERR_IRQ_MASK |
-			    AES_ACC_SETTING_SETUP_ERR_IRQ_MASK,
-		    base + AES_SETTING_OFFSET);
+	ll_aes_enable_it_done(aes);
+	ll_aes_enable_it_bus_err(aes);
+	ll_aes_enable_it_setup_err(aes);
 
 	/* Set DMA addresses and size */
-	sys_write32((uint32_t)in_data, base + AES_DMA_IN_OFFSET);
-	sys_write32((uint32_t)out_data, base + AES_DMA_OUT_OFFSET);
-	sys_write32((size + 15) >> 4, base + AES_DMA_DATA_OFFSET);
+	ll_aes_set_dma_in(aes, (uint32_t)in_data);
+	ll_aes_set_dma_out(aes, (uint32_t)out_data);
+	ll_aes_set_dma_blocks(aes, (size + 15) >> 4);
 
 	/* Set encrypt/decrypt mode */
-	aes_setting = sys_read32(base + AES_AES_SETTING_OFFSET);
-	if (enc) {
-		aes_setting |= AES_ACC_AES_SETTING_AES_OP_MODE;
-	} else {
-		aes_setting &= ~AES_ACC_AES_SETTING_AES_OP_MODE;
-	}
-	sys_write32(aes_setting, base + AES_AES_SETTING_OFFSET);
+	crypto_sifli_aes_set_op(aes, enc != 0U);
 
 	/* Store callback and packet for ISR */
 	data->cipher_status = 0;
@@ -299,15 +316,16 @@ static int crypto_sifli_aes_run_async(const struct device *dev, uint8_t enc, uin
 
 	/* Start operation */
 	barrier_dsync_fence_full();
-	sys_write32(sys_read32(base + AES_COMMAND_OFFSET) | AES_ACC_COMMAND_START,
-		    base + AES_COMMAND_OFFSET);
+	ll_aes_start(aes);
 
 	if (cb == NULL) {
 		/* Synchronous mode: wait for completion via semaphore */
 		if (k_sem_take(&data->sync_sem, K_USEC(CRYPTO_SIFLI_TIMEOUT_US)) != 0) {
 			LOG_ERR("AES operation timeout");
 			/* Disable IRQ mask */
-			sys_write32(0, base + AES_SETTING_OFFSET);
+			ll_aes_disable_it_done(aes);
+			ll_aes_disable_it_bus_err(aes);
+			ll_aes_disable_it_setup_err(aes);
 			data->cipher_pkt = NULL;
 			return -ETIMEDOUT;
 		}
@@ -800,11 +818,13 @@ static int crypto_sifli_session_free(const struct device *dev, struct cipher_ctx
 
 static inline bool crypto_sifli_hash_busy(uint32_t base)
 {
+	/* LL gap: HASH busy status is not covered by ll_aes.h. */
 	return sys_test_bit(base + AES_STATUS_OFFSET, AES_ACC_STATUS_HASH_BUSY_Pos);
 }
 
 static void crypto_sifli_hash_reset(uint32_t base)
 {
+	/* LL gap: HASH reset is not covered by ll_aes.h. */
 	sys_set_bit(base + AES_COMMAND_OFFSET, AES_ACC_COMMAND_HASH_RESET_Pos);
 	sys_clear_bit(base + AES_COMMAND_OFFSET, AES_ACC_COMMAND_HASH_RESET_Pos);
 }
@@ -862,6 +882,7 @@ static int crypto_sifli_hash_handler(struct hash_ctx *ctx, struct hash_pkt *pkt,
 
 	k_sem_take(&data->device_sem, K_FOREVER);
 
+	/* LL gap: HASH setup/DMA/start/result registers are not covered by ll_aes.h. */
 	/* Reset hash module */
 	crypto_sifli_hash_reset(base);
 

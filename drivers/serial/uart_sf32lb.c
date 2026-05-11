@@ -14,12 +14,13 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/irq.h>
+#include <zephyr/sys/sys_io.h>
 #ifdef CONFIG_UART_ASYNC_API
 #include <zephyr/drivers/dma/sf32lb.h>
 #include <zephyr/drivers/dma.h>
 #endif
 
-#include <register.h>
+#include <ll_usart.h>
 
 LOG_MODULE_REGISTER(sf32lb_uart, CONFIG_UART_LOG_LEVEL);
 
@@ -52,28 +53,6 @@ struct sf32lb_uart_async_data {
 };
 #endif /* CONFIG_UART_ASYNC_API */
 
-#define UART_CR1   offsetof(USART_TypeDef, CR1)
-#define UART_CR2   offsetof(USART_TypeDef, CR2)
-#define UART_CR3   offsetof(USART_TypeDef, CR3)
-#define UART_BRR   offsetof(USART_TypeDef, BRR)
-#define UART_RQR   offsetof(USART_TypeDef, RQR)
-#define UART_ISR   offsetof(USART_TypeDef, ISR)
-#define UART_ICR   offsetof(USART_TypeDef, ICR)
-#define UART_RDR   offsetof(USART_TypeDef, RDR)
-#define UART_TDR   offsetof(USART_TypeDef, TDR)
-#define UART_MISCR offsetof(USART_TypeDef, MISCR)
-
-#define UART_CR1_M_6B FIELD_PREP(USART_CR1_M_Msk, 0U)
-#define UART_CR1_M_7B FIELD_PREP(USART_CR1_M_Msk, 1U)
-#define UART_CR1_M_8B FIELD_PREP(USART_CR1_M_Msk, 2U)
-#define UART_CR1_M_9B FIELD_PREP(USART_CR1_M_Msk, 3U)
-
-#define UART_CR2_STOP_1B FIELD_PREP(USART_CR2_STOP_Msk, 0U)
-#define UART_CR2_STOP_2B FIELD_PREP(USART_CR2_STOP_Msk, 1U)
-
-/* minimal BRR: INT=1, FRAC=0 (0x10) */
-#define UART_BRR_MIN 0x10U
-
 struct uart_sf32lb_data {
 #ifdef CONFIG_UART_USE_RUNTIME_CONFIGURE
 	struct uart_config uart_config;
@@ -101,38 +80,29 @@ struct uart_sf32lb_config {
 #endif /* CONFIG_UART_ASYNC_API */
 };
 
-#ifdef CONFIG_UART_INTERRUPT_DRIVEN
-static void uart_sf32lb_isr(const struct device *dev)
+static inline USART_TypeDef *uart_sf32lb_regs(const struct uart_sf32lb_config *config)
 {
-	const struct uart_sf32lb_config *config = dev->config;
-	struct uart_sf32lb_data *data = dev->data;
+	return (USART_TypeDef *)config->base;
+}
 
-	if (data->irq_callback) {
-		data->irq_callback(dev, data->cb_data);
-	}
+#ifdef CONFIG_UART_ASYNC_API
+static inline uintptr_t uart_sf32lb_rdr_addr(const struct uart_sf32lb_config *config)
+{
+	return (uintptr_t)&uart_sf32lb_regs(config)->RDR;
+}
 
-	sys_write32(USART_ISR_TXE | USART_ICR_TCCF | USART_ISR_RXNE, config->base + UART_ICR);
+static inline uintptr_t uart_sf32lb_tdr_addr(const struct uart_sf32lb_config *config)
+{
+	return (uintptr_t)&uart_sf32lb_regs(config)->TDR;
 }
 #endif
 
-static int uart_sf32lb_configure(const struct device *dev, const struct uart_config *cfg)
+static int uart_sf32lb_get_frame_config(const struct uart_config *cfg,
+					ll_usart_frame_config_t *frame)
 {
-	const struct uart_sf32lb_config *config = dev->config;
-#ifdef CONFIG_UART_USE_RUNTIME_CONFIGURE
-	struct uart_sf32lb_data *data = dev->data;
-#endif
 	enum uart_config_data_bits data_bits = cfg->data_bits;
-	uint32_t cr1, cr2, cr3, brr, miscr;
 
-	/* CR1: disable USART */
-	cr1 = sys_read32(config->base + UART_CR1);
-	cr1 &= ~USART_CR1_UE;
-	sys_write32(cr1, config->base + UART_CR1);
-
-	/* CR1: data bits, parity, oversampling */
-	cr1 &= ~(USART_CR1_M_Msk | USART_CR1_PCE_Msk | USART_CR1_PS_Msk | USART_CR1_OVER8_Msk);
-
-	/* data bits include parity bit */
+	/* SiFli USART data width includes the parity bit. */
 	if (cfg->parity != UART_CFG_PARITY_NONE) {
 		data_bits++;
 		if (data_bits > UART_CFG_DATA_BITS_9) {
@@ -142,16 +112,16 @@ static int uart_sf32lb_configure(const struct device *dev, const struct uart_con
 
 	switch (data_bits) {
 	case UART_CFG_DATA_BITS_6:
-		cr1 |= UART_CR1_M_6B;
+		frame->data_width = LL_USART_DATAWIDTH_6B;
 		break;
 	case UART_CFG_DATA_BITS_7:
-		cr1 |= UART_CR1_M_7B;
+		frame->data_width = LL_USART_DATAWIDTH_7B;
 		break;
 	case UART_CFG_DATA_BITS_8:
-		cr1 |= UART_CR1_M_8B;
+		frame->data_width = LL_USART_DATAWIDTH_8B;
 		break;
 	case UART_CFG_DATA_BITS_9:
-		cr1 |= UART_CR1_M_9B;
+		frame->data_width = LL_USART_DATAWIDTH_9B;
 		break;
 	default:
 		return -ENOTSUP;
@@ -159,73 +129,91 @@ static int uart_sf32lb_configure(const struct device *dev, const struct uart_con
 
 	switch (cfg->parity) {
 	case UART_CFG_PARITY_NONE:
+		frame->parity = LL_USART_PARITY_NONE;
 		break;
 	case UART_CFG_PARITY_ODD:
-		cr1 |= (USART_CR1_PCE | USART_CR1_PS);
+		frame->parity = LL_USART_PARITY_ODD;
 		break;
 	case UART_CFG_PARITY_EVEN:
-		cr1 |= USART_CR1_PCE;
+		frame->parity = LL_USART_PARITY_EVEN;
 		break;
 	default:
 		return -ENOTSUP;
 	}
-
-	sys_write32(cr1, config->base + UART_CR1);
-
-	/* CR2: stop bits */
-	cr2 = sys_read32(config->base + UART_CR2);
-	cr2 &= ~USART_CR2_STOP_Msk;
 
 	switch (cfg->stop_bits) {
 	case UART_CFG_STOP_BITS_1:
-		cr2 |= UART_CR2_STOP_1B;
+		frame->stop_bits = LL_USART_STOPBITS_1;
 		break;
 	case UART_CFG_STOP_BITS_2:
-		cr2 |= UART_CR2_STOP_2B;
+		frame->stop_bits = LL_USART_STOPBITS_2;
 		break;
 	default:
 		return -ENOTSUP;
 	}
 
-	sys_write32(cr2, config->base + UART_CR2);
+	return 0;
+}
 
-	/* CR3: flow control */
-	cr3 = sys_read32(config->base + UART_CR3);
-	cr3 &= ~(USART_CR3_RTSE_Msk | USART_CR3_CTSE_Msk);
-
+static int uart_sf32lb_get_hwflow_config(const struct uart_config *cfg, uint32_t *hwflow)
+{
 	switch (cfg->flow_ctrl) {
 	case UART_CFG_FLOW_CTRL_NONE:
+		*hwflow = LL_USART_HWCONTROL_NONE;
 		break;
 	case UART_CFG_FLOW_CTRL_RTS_CTS:
-		cr3 |= (USART_CR3_RTSE_Msk | USART_CR3_CTSE_Msk);
+		*hwflow = LL_USART_HWCONTROL_RTS_CTS;
 		break;
 	default:
 		return -ENOTSUP;
 	}
 
-	sys_write32(cr3, config->base + UART_CR3);
+	return 0;
+}
 
-	/* enable USART */
-	cr1 |= USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
-	sys_write32(cr1, config->base + UART_CR1);
+#ifdef CONFIG_UART_INTERRUPT_DRIVEN
+static void uart_sf32lb_isr(const struct device *dev)
+{
+	const struct uart_sf32lb_config *config = dev->config;
+	struct uart_sf32lb_data *data = dev->data;
+	USART_TypeDef *uart = uart_sf32lb_regs(config);
 
-	/* BRR: baudrate */
-	miscr = sys_read32(config->base + UART_MISCR);
-	miscr &= ~USART_MISCR_SMPLINI_Msk;
-
-	brr = 48000000UL / cfg->baudrate;
-	if (brr < UART_BRR_MIN) {
-		cr1 |= USART_CR1_OVER8;
-		sys_write32(cr1, config->base + UART_CR1);
-		/* recalculate brr with reduced oversampling */
-		brr = (48000000UL * 2U) / cfg->baudrate;
-		miscr |= FIELD_PREP(USART_MISCR_SMPLINI_Msk, 2U);
-	} else {
-		miscr |= FIELD_PREP(USART_MISCR_SMPLINI_Msk, 6U);
+	if (data->irq_callback) {
+		data->irq_callback(dev, data->cb_data);
 	}
 
-	sys_write32(miscr, config->base + UART_MISCR);
-	sys_write32(brr, config->base + UART_BRR);
+	ll_usart_clear_flag_tc(uart);
+}
+#endif
+
+static int uart_sf32lb_configure(const struct device *dev, const struct uart_config *cfg)
+{
+	const struct uart_sf32lb_config *config = dev->config;
+#ifdef CONFIG_UART_USE_RUNTIME_CONFIGURE
+	struct uart_sf32lb_data *data = dev->data;
+#endif
+	USART_TypeDef *uart = uart_sf32lb_regs(config);
+	ll_usart_frame_config_t frame;
+	uint32_t hwflow;
+	int ret;
+
+	ret = uart_sf32lb_get_frame_config(cfg, &frame);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = uart_sf32lb_get_hwflow_config(cfg, &hwflow);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ll_usart_disable(uart);
+	ll_usart_config_frame(uart, &frame);
+	ll_usart_config_hwflow(uart, hwflow);
+	ll_usart_enable(uart);
+	ll_usart_enable_tx(uart);
+	ll_usart_enable_rx(uart);
+	ll_usart_config_baudrate(uart, cfg->baudrate);
 
 #ifdef CONFIG_UART_USE_RUNTIME_CONFIGURE
 	data->uart_config = *cfg;
@@ -236,9 +224,10 @@ static int uart_sf32lb_configure(const struct device *dev, const struct uart_con
 static int uart_sf32lb_poll_in(const struct device *dev, uint8_t *c)
 {
 	const struct uart_sf32lb_config *config = dev->config;
+	USART_TypeDef *uart = uart_sf32lb_regs(config);
 
-	if ((sys_read32(config->base + UART_ISR) & USART_ISR_RXNE) != 0U) {
-		*c = sys_read32(config->base + UART_RDR) & 0xFFU;
+	if (ll_usart_is_active_flag_rxne(uart)) {
+		*c = ll_usart_receive_data8(uart);
 		return 0;
 	}
 
@@ -248,39 +237,42 @@ static int uart_sf32lb_poll_in(const struct device *dev, uint8_t *c)
 static void uart_sf32lb_poll_out(const struct device *dev, uint8_t c)
 {
 	const struct uart_sf32lb_config *config = dev->config;
+	USART_TypeDef *uart = uart_sf32lb_regs(config);
 
-	sys_write32(USART_ISR_TC, config->base + UART_ICR);
-	sys_write8(c, config->base + UART_TDR);
+	ll_usart_clear_flag_tc(uart);
+	ll_usart_transmit_data8(uart, c);
 
-	while ((sys_read32(config->base + UART_ISR) & USART_ISR_TC) == 0U) {
+	while (!ll_usart_is_active_flag_tc(uart)) {
 	}
 }
 
 static int uart_sf32lb_err_check(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
-	uint32_t isr = sys_read32(config->base + UART_ISR);
+	USART_TypeDef *uart = uart_sf32lb_regs(config);
 	int err = 0;
 
-	if (isr & USART_ISR_ORE) {
+	if (ll_usart_is_active_flag_ore(uart)) {
 		err |= UART_ERROR_OVERRUN;
 	}
 
-	if (isr & USART_ISR_PE) {
+	if (ll_usart_is_active_flag_pe(uart)) {
 		err |= UART_ERROR_PARITY;
 	}
 
-	if (isr & USART_ISR_FE) {
+	if (ll_usart_is_active_flag_fe(uart)) {
 		err |= UART_ERROR_FRAMING;
 	}
 
-	if (isr & USART_ISR_NF) {
+	if (ll_usart_is_active_flag_ne(uart)) {
 		err |= UART_ERROR_NOISE;
 	}
 
 	/* clear error flags */
-	sys_write32(USART_ICR_ORECF | USART_ICR_PECF | USART_ICR_FECF | USART_ICR_NCF,
-		    config->base + UART_ICR);
+	ll_usart_clear_flag_ore(uart);
+	ll_usart_clear_flag_pe(uart);
+	ll_usart_clear_flag_fe(uart);
+	ll_usart_clear_flag_ne(uart);
 
 	return err;
 }
@@ -305,13 +297,14 @@ static int uart_sf32lb_config_get(const struct device *dev, struct uart_config *
 static int uart_sf32lb_fifo_fill(const struct device *dev, const uint8_t *tx_data, int len)
 {
 	const struct uart_sf32lb_config *config = dev->config;
+	USART_TypeDef *uart = uart_sf32lb_regs(config);
 	int i;
 
 	for (i = 0; i < len; i++) {
-		if (!sys_test_bit(config->base + UART_ISR, USART_ISR_TXE_Pos)) {
+		if (!ll_usart_is_active_flag_txe(uart)) {
 			break;
 		}
-		sys_write8(tx_data[i], config->base + UART_TDR);
+		ll_usart_transmit_data8(uart, tx_data[i]);
 	}
 
 	return i;
@@ -320,13 +313,14 @@ static int uart_sf32lb_fifo_fill(const struct device *dev, const uint8_t *tx_dat
 static int uart_sf32lb_fifo_read(const struct device *dev, uint8_t *rx_data, const int size)
 {
 	const struct uart_sf32lb_config *config = dev->config;
+	USART_TypeDef *uart = uart_sf32lb_regs(config);
 	int i;
 
 	for (i = 0; i < size; i++) {
-		if (!sys_test_bit(config->base + UART_ISR, USART_ISR_RXNE_Pos)) {
+		if (!ll_usart_is_active_flag_rxne(uart)) {
 			break;
 		}
-		rx_data[i] = sys_read8(config->base + UART_RDR);
+		rx_data[i] = ll_usart_receive_data8(uart);
 	}
 
 	return i;
@@ -336,58 +330,62 @@ static void uart_sf32lb_irq_tx_enable(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
 
-	sys_set_bit(config->base + UART_CR1, USART_CR1_TXEIE_Pos);
+	ll_usart_enable_it_txe(uart_sf32lb_regs(config));
 }
 
 static void uart_sf32lb_irq_tx_disable(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
 
-	sys_clear_bit(config->base + UART_CR1, USART_CR1_TXEIE_Pos);
+	ll_usart_disable_it_txe(uart_sf32lb_regs(config));
 }
 
 static int uart_sf32lb_irq_tx_ready(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
 
-	return sys_test_bit(config->base + UART_ISR, USART_ISR_TXE_Pos);
+	return ll_usart_is_active_flag_txe(uart_sf32lb_regs(config));
 }
 
 static int uart_sf32lb_irq_tx_complete(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
 
-	return sys_test_bit(config->base + UART_ISR, USART_ISR_TC_Pos);
+	return ll_usart_is_active_flag_tc(uart_sf32lb_regs(config));
 }
 
 static int uart_sf32lb_irq_rx_ready(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
 
-	return sys_test_bit(config->base + UART_ISR, USART_ISR_RXNE_Pos);
+	return ll_usart_is_active_flag_rxne(uart_sf32lb_regs(config));
 }
 
 static void uart_sf32lb_irq_err_enable(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
+	USART_TypeDef *uart = uart_sf32lb_regs(config);
 
-	sys_set_bit(config->base + UART_CR1, USART_CR1_PEIE_Pos);
-	sys_set_bit(config->base + UART_CR3, USART_CR3_EIE_Pos);
+	ll_usart_enable_it_pe(uart);
+	ll_usart_enable_it_error(uart);
 }
 
 static void uart_sf32lb_irq_err_disable(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
+	USART_TypeDef *uart = uart_sf32lb_regs(config);
 
-	sys_clear_bit(config->base + UART_CR1, USART_CR1_PEIE_Pos);
-	sys_clear_bit(config->base + UART_CR3, USART_CR3_EIE_Pos);
+	ll_usart_disable_it_pe(uart);
+	ll_usart_disable_it_error(uart);
 }
 
 static int uart_sf32lb_irq_is_pending(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
+	USART_TypeDef *uart = uart_sf32lb_regs(config);
 
-	return sys_read32(config->base + UART_ISR) == 0U ? 0 : 1;
+	/* LL gap: ll_usart exposes individual flag readers, not aggregate ISR state. */
+	return sys_read32((mem_addr_t)&uart->ISR) == 0U ? 0 : 1;
 }
 
 static int uart_sf32lb_irq_update(const struct device *dev)
@@ -409,14 +407,14 @@ static void uart_sf32lb_irq_rx_enable(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
 
-	sys_set_bit(config->base + UART_CR1, USART_CR1_RXNEIE_Pos);
+	ll_usart_enable_it_rxne(uart_sf32lb_regs(config));
 }
 
 static void uart_sf32lb_irq_rx_disable(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
 
-	sys_clear_bit(config->base + UART_CR1, USART_CR1_RXNEIE_Pos);
+	ll_usart_disable_it_rxne(uart_sf32lb_regs(config));
 }
 #endif /* CONFIG_UART_INTERRUPT_DRIVEN */
 
@@ -443,7 +441,7 @@ static void uart_sf32lb_dma_tx_done(const struct device *dma_dev, void *user_dat
 	key = irq_lock();
 
 	/* Disable DMA for TX */
-	sys_clear_bit(config->base + UART_CR3, USART_CR3_DMAT_Pos);
+	ll_usart_disable_dma_tx(uart_sf32lb_regs(config));
 
 	evt.type = UART_TX_DONE;
 	evt.data.tx.buf = data->async.tx.buf;
@@ -471,7 +469,7 @@ static void uart_sf32lb_dma_rx_done(const struct device *dma_dev, void *user_dat
 	key = irq_lock();
 
 	/* Disable DMA for RX */
-	sys_clear_bit(config->base + UART_CR3, USART_CR3_DMAR_Pos);
+	ll_usart_disable_dma_rx(uart_sf32lb_regs(config));
 	sf32lb_dma_stop_dt(&config->rx_dma);
 
 	/* Notify RX_RDY */
@@ -498,13 +496,13 @@ static void uart_sf32lb_dma_rx_done(const struct device *dma_dev, void *user_dat
 
 	/* If there's a next buffer, restart DMA */
 	if (data->async.rx.buf) {
-		sf32lb_dma_reload_dt(&config->rx_dma, (uint32_t)(config->base + UART_RDR),
-				     (uint32_t)data->async.rx.buf, data->async.rx.len);
+		sf32lb_dma_reload_dt(&config->rx_dma, uart_sf32lb_rdr_addr(config),
+				     (uintptr_t)data->async.rx.buf, data->async.rx.len);
 
 		(void)sf32lb_dma_start_dt(&config->rx_dma);
 
-		sys_set_bit(config->base + UART_CR3, USART_CR3_DMAR_Pos);
-		sys_set_bit(config->base + UART_RQR, USART_RQR_RXFRQ_Pos);
+		ll_usart_enable_dma_rx(uart_sf32lb_regs(config));
+		ll_usart_request_rxdata_flush(uart_sf32lb_regs(config));
 	}
 
 	evt.type = UART_RX_BUF_REQUEST;
@@ -554,13 +552,13 @@ static int uart_async_sf32lb_rx_enable(const struct device *dev, uint8_t *buf, s
 	data->async.rx.len = len;
 	data->async.rx.timeout = timeout;
 
-	sf32lb_dma_reload_dt(&config->rx_dma, (uintptr_t)(config->base + UART_RDR),
-			     (uint32_t)data->async.rx.buf, data->async.rx.len);
+	sf32lb_dma_reload_dt(&config->rx_dma, uart_sf32lb_rdr_addr(config),
+			     (uintptr_t)data->async.rx.buf, data->async.rx.len);
 
 	(void)sf32lb_dma_start_dt(&config->rx_dma);
 
-	sys_set_bit(config->base + UART_CR3, USART_CR3_DMAR_Pos);
-	sys_set_bit(config->base + UART_RQR, USART_RQR_RXFRQ_Pos);
+	ll_usart_enable_dma_rx(uart_sf32lb_regs(config));
+	ll_usart_request_rxdata_flush(uart_sf32lb_regs(config));
 
 	/* Request next buffer */
 	evt.type = UART_RX_BUF_REQUEST;
@@ -616,7 +614,7 @@ static int uart_async_sf32lb_rx_disable(const struct device *dev)
 		goto unlock;
 	}
 
-	sys_clear_bit(config->base + UART_CR3, USART_CR3_DMAR_Pos);
+	ll_usart_disable_dma_rx(uart_sf32lb_regs(config));
 
 	err = sf32lb_dma_stop_dt(&config->rx_dma);
 	if (err) {
@@ -694,17 +692,16 @@ static int uart_async_sf32lb_tx(const struct device *dev, const uint8_t *buf, si
 	data->async.tx.buf = buf;
 	data->async.tx.len = len;
 
-	sf32lb_dma_reload_dt(&config->tx_dma, (uint32_t)data->async.tx.buf,
-			     (uint32_t)(config->base + UART_TDR), data->async.tx.len);
+	sf32lb_dma_reload_dt(&config->tx_dma, (uintptr_t)data->async.tx.buf,
+			     uart_sf32lb_tdr_addr(config), data->async.tx.len);
 
 	(void)sf32lb_dma_start_dt(&config->tx_dma);
 
 	uart_sf32lb_async_timer_start(&data->async.tx.timeout_work, timeout);
 
-	/* Clear the TC flag in the ICR register */
-	sys_write32(USART_ICR_TCCF, config->base + UART_ICR);
+	ll_usart_clear_flag_tc(uart_sf32lb_regs(config));
 
-	sys_set_bit(config->base + UART_CR3, USART_CR3_DMAT_Pos);
+	ll_usart_enable_dma_tx(uart_sf32lb_regs(config));
 
 	irq_unlock(key);
 
@@ -730,7 +727,7 @@ static int uart_async_sf32lb_tx_abort(const struct device *dev)
 
 	key = irq_lock();
 
-	sys_clear_bit(config->base + UART_CR3, USART_CR3_DMAT_Pos);
+	ll_usart_disable_dma_tx(uart_sf32lb_regs(config));
 
 	err = sf32lb_dma_stop_dt(&config->tx_dma);
 	if (err) {

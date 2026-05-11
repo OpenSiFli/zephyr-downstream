@@ -14,48 +14,15 @@
 #include <zephyr/irq.h>
 #include <zephyr/spinlock.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/sys_io.h>
 #include <zephyr/toolchain.h>
 
-#include <register.h>
+#include <ll_dmac.h>
 
 LOG_MODULE_REGISTER(dma_sf32lb, CONFIG_DMA_LOG_LEVEL);
 
 #define DMAC_MAX_LEN DMAC_CNDTR1_NDT
 #define DMAC_MAX_PL  3U
-
-#define DMAC_ISR       offsetof(DMAC_TypeDef, ISR)
-#define DMAC_IFCR      offsetof(DMAC_TypeDef, IFCR)
-#define DMAC_CCR1      offsetof(DMAC_TypeDef, CCR1)
-#define DMAC_CCR2      offsetof(DMAC_TypeDef, CCR2)
-#define DMAC_CCRX(n)   (DMAC_CCR1 + (DMAC_CCR2 - DMAC_CCR1) * (n))
-#define DMAC_CNDTR1    offsetof(DMAC_TypeDef, CNDTR1)
-#define DMAC_CNDTR2    offsetof(DMAC_TypeDef, CNDTR2)
-#define DMAC_CNDTRX(n) (DMAC_CNDTR1 + (DMAC_CNDTR2 - DMAC_CNDTR1) * (n))
-#define DMAC_CPAR1     offsetof(DMAC_TypeDef, CPAR1)
-#define DMAC_CPAR2     offsetof(DMAC_TypeDef, CPAR2)
-#define DMAC_CPARX(n)  (DMAC_CPAR1 + (DMAC_CPAR2 - DMAC_CPAR1) * (n))
-#define DMAC_CM0AR1    offsetof(DMAC_TypeDef, CM0AR1)
-#define DMAC_CM0AR2    offsetof(DMAC_TypeDef, CM0AR2)
-#define DMAC_CM0ARX(n) (DMAC_CM0AR1 + (DMAC_CM0AR2 - DMAC_CM0AR1) * (n))
-#define DMAC_CBSR1     offsetof(DMAC_TypeDef, CBSR1)
-#define DMAC_CBSR2     offsetof(DMAC_TypeDef, CBSR2)
-#define DMAC_CBSRX(n)  (DMAC_CBSR1 + (DMAC_CBSR2 - DMAC_CBSR1) * (n))
-#define DMAC_CSELR1    offsetof(DMAC_TypeDef, CSELR1)
-#define DMAC_CSELR2    offsetof(DMAC_TypeDef, CSELR2)
-
-#define DMAC_ISR_TCIF(n) (DMAC_ISR_TCIF1_Msk << (n * 4U))
-#define DMAC_ISR_HTIF(n) (DMAC_ISR_HTIF1_Msk << (n * 4U))
-
-#define DMAC_IFCR_ALL(n)                                                                           \
-	((DMAC_IFCR_CGIF1_Msk | DMAC_IFCR_CTCIF1_Msk | DMAC_IFCR_CHTIF1_Msk |                      \
-	  DMAC_IFCR_CTEIF1_Msk)                                                                    \
-	 << (n * 4U))
-#define DMAC_IFCR_CTCIF(n) (DMAC_IFCR_CTCIF1_Msk << (n * 4U))
-#define DMAC_IFCR_CTEIF(n) (DMAC_IFCR_CTEIF1_Msk << (n * 4U))
-#define DMAC_IFCR_CTHIF(n) (DMAC_IFCR_CHTIF1_Msk << (n * 4U))
-
-#define DMAC_CCRX_PSIZE(n) FIELD_PREP(DMAC_CCR1_PSIZE_Msk, LOG2CEIL(n))
-#define DMAC_CCRX_MSIZE(n) FIELD_PREP(DMAC_CCR1_MSIZE_Msk, LOG2CEIL(n))
 
 #define DMAC_MAX_CH 8U
 
@@ -86,20 +53,59 @@ struct dma_sf32lb_data {
 	ATOMIC_DEFINE(status, DMAC_MAX_CH);
 };
 
+static inline uint32_t dma_sf32lb_ll_channel(uint32_t channel)
+{
+	return channel + 1U;
+}
+
+static inline ll_dmac_channel_t *dma_sf32lb_get_channel(DMAC_TypeDef *dmac, uint32_t channel)
+{
+	return ll_dmac_get_channel(dmac, dma_sf32lb_ll_channel(channel));
+}
+
+static uint32_t dma_sf32lb_data_size_to_ll(uint32_t size, bool memory)
+{
+	switch (size) {
+	case 1U:
+		return memory ? LL_DMAC_MSIZE_8BIT : LL_DMAC_PSIZE_8BIT;
+	case 2U:
+		return memory ? LL_DMAC_MSIZE_16BIT : LL_DMAC_PSIZE_16BIT;
+	case 4U:
+		return memory ? LL_DMAC_MSIZE_32BIT : LL_DMAC_PSIZE_32BIT;
+	default:
+		__ASSERT_NO_MSG(false);
+		return 0U;
+	}
+}
+
+static inline void dma_sf32lb_clear_all_flags(DMAC_TypeDef *dmac, uint32_t channel)
+{
+	uint32_t ll_channel = dma_sf32lb_ll_channel(channel);
+
+	ll_dmac_clear_flag_tc(dmac, ll_channel);
+	ll_dmac_clear_flag_ht(dmac, ll_channel);
+	ll_dmac_clear_flag_te(dmac, ll_channel);
+	ll_dmac_clear_flag_gi(dmac, ll_channel);
+}
+
 static void dma_sf32lb_isr(const struct device *dev, uint8_t channel)
 {
 	const struct dma_sf32lb_config *config = dev->config;
 	struct dma_sf32lb_data *data = dev->data;
+	DMAC_TypeDef *dmac = (DMAC_TypeDef *)config->dmac;
+	uint32_t ll_channel = dma_sf32lb_ll_channel(channel);
 	uint32_t isr;
+	uint32_t channel_flags;
 	int status;
 
-	isr = sys_read32(config->dmac + DMAC_ISR);
-	if ((isr & DMAC_ISR_TCIF(channel)) != 0U) {
+	isr = ll_dmac_get_isr(dmac);
+	channel_flags = (isr >> ll_dmac_channel_flag_shift(ll_channel)) & 0xFU;
+	if (ll_dmac_is_active_flag_tc(dmac, ll_channel) != 0U) {
 		status = DMA_STATUS_COMPLETE;
 		atomic_clear_bit(data->status, channel);
-	} else if ((isr & DMAC_ISR_HTIF(channel)) != 0U) {
+	} else if (ll_dmac_is_active_flag_ht(dmac, ll_channel) != 0U) {
 		status = DMA_STATUS_HALF_COMPLETE;
-	} else if (isr) {
+	} else if (channel_flags != 0U) {
 		status = -EIO;
 		atomic_clear_bit(data->status, channel);
 	} else {
@@ -111,7 +117,7 @@ static void dma_sf32lb_isr(const struct device *dev, uint8_t channel)
 						   channel, status);
 	}
 
-	sys_write32(DMAC_IFCR_ALL(channel), config->dmac + DMAC_IFCR);
+	dma_sf32lb_clear_all_flags(dmac, channel);
 }
 
 #define DMA_SF32LB_IRQ_DEFINE(n, _)                                                                \
@@ -189,8 +195,21 @@ static int dma_sf32lb_config(const struct device *dev, uint32_t channel,
 	int ret;
 	const struct dma_sf32lb_config *config = dev->config;
 	struct dma_sf32lb_data *data = dev->data;
-	uint32_t ccrx;
-	uint32_t cselrx;
+	DMAC_TypeDef *dmac = (DMAC_TypeDef *)config->dmac;
+	ll_dmac_channel_t *chx = dma_sf32lb_get_channel(dmac, channel);
+	ll_dmac_channel_config_t ch_cfg = {
+		.mem2mem = LL_DMAC_MEM2MEM_DISABLE,
+		.priority = FIELD_PREP(DMAC_CCR1_PL_Msk, config_dma->channel_priority),
+		.msize = LL_DMAC_MSIZE_8BIT,
+		.psize = LL_DMAC_PSIZE_8BIT,
+		.minc = LL_DMAC_MINC_DISABLE,
+		.pinc = LL_DMAC_PINC_DISABLE,
+		.circ = LL_DMAC_CIRC_DISABLE,
+		.dir = LL_DMAC_DIR_PERIPH_TO_MEM,
+		.it_tc = LL_DMAC_IT_TC_DISABLE,
+		.it_ht = LL_DMAC_IT_HT_DISABLE,
+		.it_te = LL_DMAC_IT_TE_DISABLE,
+	};
 	uint32_t cparx;
 	uint32_t cm0arx;
 
@@ -200,54 +219,52 @@ static int dma_sf32lb_config(const struct device *dev, uint32_t channel,
 	}
 
 	/* configure transfer parameters */
-	ccrx = sys_read32(config->dmac + DMAC_CCRX(channel));
-	if ((ccrx & DMAC_CCR1_EN) != 0U) {
+	if (ll_dmac_is_enabled_channel(chx) != 0U) {
 		LOG_ERR("Configuration not possible with DMA enabled");
 		return -EIO;
 	}
 
-	ccrx &= ~(DMAC_CCR1_TCIE | DMAC_CCR1_HTIE | DMAC_CCR1_TEIE | DMAC_CCR1_DIR_Msk |
-		  DMAC_CCR1_CIRC_Msk | DMAC_CCR1_PINC_Msk | DMAC_CCR1_MINC_Msk |
-		  DMAC_CCR1_PSIZE_Msk | DMAC_CCR1_MSIZE_Msk | DMAC_CCR1_PL_Msk |
-		  DMAC_CCR1_MEM2MEM_Msk);
-
-	ccrx |= FIELD_PREP(DMAC_CCR1_PL_Msk, config_dma->channel_priority);
-
 	if (config_dma->head_block->dest_reload_en || config_dma->head_block->source_reload_en) {
-		ccrx |= DMAC_CCR1_CIRC;
+		ch_cfg.circ = LL_DMAC_CIRC_ENABLE;
 	}
 
 	if (config_dma->half_complete_callback_en) {
-		ccrx |= DMAC_CCR1_HTIE;
+		ch_cfg.it_ht = LL_DMAC_IT_HT_ENABLE;
+	}
+
+	if (config_dma->dma_callback != NULL) {
+		ch_cfg.it_tc = LL_DMAC_IT_TC_ENABLE;
+		ch_cfg.it_te = LL_DMAC_IT_TE_ENABLE;
 	}
 
 	switch (config_dma->channel_direction) {
 	case MEMORY_TO_MEMORY:
-		ccrx |= DMAC_CCR1_MEM2MEM;
+		ch_cfg.mem2mem = LL_DMAC_MEM2MEM_ENABLE;
 		__fallthrough;
 	case PERIPHERAL_TO_MEMORY:
-		ccrx |= DMAC_CCRX_PSIZE(config_dma->source_data_size) |
-			DMAC_CCRX_MSIZE(config_dma->dest_data_size);
+		ch_cfg.psize = dma_sf32lb_data_size_to_ll(config_dma->source_data_size, false);
+		ch_cfg.msize = dma_sf32lb_data_size_to_ll(config_dma->dest_data_size, true);
 
 		if (config_dma->head_block->source_addr_adj == DMA_ADDR_ADJ_INCREMENT) {
-			ccrx |= DMAC_CCR1_PINC;
+			ch_cfg.pinc = LL_DMAC_PINC_ENABLE;
 		}
 		if (config_dma->head_block->dest_addr_adj == DMA_ADDR_ADJ_INCREMENT) {
-			ccrx |= DMAC_CCR1_MINC;
+			ch_cfg.minc = LL_DMAC_MINC_ENABLE;
 		}
 
 		cparx = config_dma->head_block->source_address;
 		cm0arx = config_dma->head_block->dest_address;
 		break;
 	case MEMORY_TO_PERIPHERAL:
-		ccrx |= DMAC_CCR1_DIR | DMAC_CCRX_PSIZE(config_dma->dest_data_size) |
-			DMAC_CCRX_MSIZE(config_dma->source_data_size);
+		ch_cfg.dir = LL_DMAC_DIR_MEM_TO_PERIPH;
+		ch_cfg.psize = dma_sf32lb_data_size_to_ll(config_dma->dest_data_size, false);
+		ch_cfg.msize = dma_sf32lb_data_size_to_ll(config_dma->source_data_size, true);
 
 		if (config_dma->head_block->source_addr_adj == DMA_ADDR_ADJ_INCREMENT) {
-			ccrx |= DMAC_CCR1_MINC;
+			ch_cfg.minc = LL_DMAC_MINC_ENABLE;
 		}
 		if (config_dma->head_block->dest_addr_adj == DMA_ADDR_ADJ_INCREMENT) {
-			ccrx |= DMAC_CCR1_PINC;
+			ch_cfg.pinc = LL_DMAC_PINC_ENABLE;
 		}
 
 		cparx = config_dma->head_block->dest_address;
@@ -257,31 +274,20 @@ static int dma_sf32lb_config(const struct device *dev, uint32_t channel,
 		return -ENOTSUP;
 	}
 
-	sys_write32(ccrx, config->dmac + DMAC_CCRX(channel));
+	ll_dmac_config_channel(chx, &ch_cfg);
 
 	/* single transfer */
-	sys_write32(FIELD_PREP(DMAC_CBSR1_BS_Msk, 0U), config->dmac + DMAC_CBSRX(channel));
+	ll_dmac_set_burst_size(chx, 0U);
 
 	/* configure transfer size, src/dst addresses */
-	sys_write32(config_dma->head_block->block_size, config->dmac + DMAC_CNDTRX(channel));
-	sys_write32(cparx, config->dmac + DMAC_CPARX(channel));
-	sys_write32(cm0arx, config->dmac + DMAC_CM0ARX(channel));
+	ll_dmac_set_ndt(chx, config_dma->head_block->block_size);
+	ll_dmac_set_cpar(chx, cparx);
+	ll_dmac_set_cm0ar(chx, cm0arx);
 
 	/* configure request */
 	K_SPINLOCK(&data->lock) {
-		if (channel < 4U) {
-			cselrx = sys_read32(config->dmac + DMAC_CSELR1);
-			cselrx &= ~(DMAC_CSELR1_C1S_Msk << (channel * 8U));
-			cselrx |= FIELD_PREP(DMAC_CSELR1_C1S_Msk << (channel * 8U),
-					     config_dma->dma_slot);
-			sys_write32(cselrx, config->dmac + DMAC_CSELR1);
-		} else {
-			cselrx = sys_read32(config->dmac + DMAC_CSELR2);
-			cselrx &= ~(DMAC_CSELR1_C1S_Msk << ((channel - 4U) * 8U));
-			cselrx |= FIELD_PREP(DMAC_CSELR1_C1S_Msk << ((channel - 4U) * 8U),
-					     config_dma->dma_slot);
-			sys_write32(cselrx, config->dmac + DMAC_CSELR2);
-		}
+		ll_dmac_set_channel_request(dmac, dma_sf32lb_ll_channel(channel),
+					    config_dma->dma_slot);
 	}
 
 	config->channels[channel].callback = config_dma->dma_callback;
@@ -296,7 +302,8 @@ static int dma_sf32lb_reload(const struct device *dev, uint32_t channel, uint32_
 			     size_t size)
 {
 	const struct dma_sf32lb_config *config = dev->config;
-	uint32_t ccrx;
+	DMAC_TypeDef *dmac = (DMAC_TypeDef *)config->dmac;
+	ll_dmac_channel_t *chx = dma_sf32lb_get_channel(dmac, channel);
 	uint32_t cparx;
 	uint32_t cm0arx;
 
@@ -311,8 +318,7 @@ static int dma_sf32lb_reload(const struct device *dev, uint32_t channel, uint32_
 		return -EINVAL;
 	}
 
-	ccrx = sys_read32(config->dmac + DMAC_CCRX(channel));
-	if ((ccrx & DMAC_CCR1_EN) != 0U) {
+	if (ll_dmac_is_enabled_channel(chx) != 0U) {
 		LOG_ERR("Channel %" PRIu32 " is busy", channel);
 		return -EBUSY;
 	}
@@ -325,7 +331,7 @@ static int dma_sf32lb_reload(const struct device *dev, uint32_t channel, uint32_
 	} else {
 	}
 
-	sys_write32(size, config->dmac + DMAC_CNDTRX(channel));
+	ll_dmac_set_ndt(chx, size);
 
 	switch (config->channels[channel].direction) {
 	case MEMORY_TO_MEMORY:
@@ -342,8 +348,8 @@ static int dma_sf32lb_reload(const struct device *dev, uint32_t channel, uint32_
 		return -ENOTSUP;
 	}
 
-	sys_write32(cparx, config->dmac + DMAC_CPARX(channel));
-	sys_write32(cm0arx, config->dmac + DMAC_CM0ARX(channel));
+	ll_dmac_set_cpar(chx, cparx);
+	ll_dmac_set_cm0ar(chx, cm0arx);
 
 	return 0;
 }
@@ -352,7 +358,8 @@ static int dma_sf32lb_start(const struct device *dev, uint32_t channel)
 {
 	const struct dma_sf32lb_config *config = dev->config;
 	struct dma_sf32lb_data *data = dev->data;
-	uint32_t ccrx;
+	DMAC_TypeDef *dmac = (DMAC_TypeDef *)config->dmac;
+	ll_dmac_channel_t *chx = dma_sf32lb_get_channel(dmac, channel);
 
 	if (channel >= config->n_channels) {
 		LOG_ERR("Invalid channel (%" PRIu32 ", max %" PRIu32 ")", channel,
@@ -360,21 +367,19 @@ static int dma_sf32lb_start(const struct device *dev, uint32_t channel)
 		return -EINVAL;
 	}
 
-	ccrx = sys_read32(config->dmac + DMAC_CCRX(channel));
-	if ((ccrx & DMAC_CCR1_EN) != 0U) {
+	if (ll_dmac_is_enabled_channel(chx) != 0U) {
 		LOG_ERR("start not possible with DMA enabled");
 		return -EIO;
 	}
 
 	/* clear all transfer flags */
-	sys_write32(DMAC_IFCR_ALL(channel), config->dmac + DMAC_IFCR);
+	dma_sf32lb_clear_all_flags(dmac, channel);
 
-	/* enable DMA, complete/error IRQs if callback configured */
-	ccrx |= DMAC_CCR1_EN;
+	/* LL gap: ll_dmac.h has config-time IRQ bits but no post-config IRQ enable helpers. */
 	if (config->channels[channel].callback != NULL) {
-		ccrx |= DMAC_CCR1_TCIE | DMAC_CCR1_TEIE;
+		sys_set_bits((mem_addr_t)&chx->CCR, DMAC_CCR1_TCIE | DMAC_CCR1_TEIE);
 	}
-	sys_write32(ccrx, config->dmac + DMAC_CCRX(channel));
+	ll_dmac_enable_channel(chx);
 	atomic_set_bit(data->status, channel);
 
 	return 0;
@@ -384,7 +389,8 @@ static int dma_sf32lb_stop(const struct device *dev, uint32_t channel)
 {
 	const struct dma_sf32lb_config *config = dev->config;
 	struct dma_sf32lb_data *data = dev->data;
-	uint32_t ccrx;
+	DMAC_TypeDef *dmac = (DMAC_TypeDef *)config->dmac;
+	ll_dmac_channel_t *chx = dma_sf32lb_get_channel(dmac, channel);
 
 	if (channel >= config->n_channels) {
 		LOG_ERR("Invalid channel (%" PRIu32 ", max %" PRIu32 ")", channel,
@@ -393,9 +399,9 @@ static int dma_sf32lb_stop(const struct device *dev, uint32_t channel)
 	}
 
 	/* disable DMA and complete/error IRQs */
-	ccrx = sys_read32(config->dmac + DMAC_CCRX(channel));
-	ccrx &= ~(DMAC_CCR1_EN | DMAC_CCR1_TCIE | DMAC_CCR1_TEIE);
-	sys_write32(ccrx, config->dmac + DMAC_CCRX(channel));
+	ll_dmac_disable_channel(chx);
+	/* LL gap: ll_dmac.h has config-time IRQ bits but no post-config IRQ disable helpers. */
+	sys_clear_bits((mem_addr_t)&chx->CCR, DMAC_CCR1_TCIE | DMAC_CCR1_TEIE);
 
 	atomic_clear_bit(data->status, channel);
 
@@ -407,6 +413,8 @@ static int dma_sf32lb_get_status(const struct device *dev, uint32_t channel,
 {
 	const struct dma_sf32lb_config *config = dev->config;
 	struct dma_sf32lb_data *data = dev->data;
+	DMAC_TypeDef *dmac = (DMAC_TypeDef *)config->dmac;
+	ll_dmac_channel_t *chx = dma_sf32lb_get_channel(dmac, channel);
 
 	if (channel >= config->n_channels) {
 		LOG_ERR("Invalid channel (%" PRIu32 ", max %" PRIu32 ")", channel,
@@ -415,7 +423,8 @@ static int dma_sf32lb_get_status(const struct device *dev, uint32_t channel,
 	}
 
 	stat->dir = config->channels[channel].direction;
-	stat->pending_length = sys_read32(config->dmac + DMAC_CNDTRX(channel));
+	/* LL gap: ll_dmac.h exposes NDT writes but not a pending-count read helper. */
+	stat->pending_length = sys_read32((mem_addr_t)&chx->CNDTR) & DMAC_CNDTR1_NDT;
 	stat->busy = atomic_test_bit(data->status, channel) && (stat->pending_length != 0U);
 
 	return 0;
@@ -440,11 +449,13 @@ static int dma_sf32lb_init(const struct device *dev)
 	(void)sf32lb_clock_control_on_dt(&config->clock);
 
 	for (uint8_t channel = 0U; channel < config->n_channels; channel++) {
-		uint32_t ccrx;
+		DMAC_TypeDef *dmac = (DMAC_TypeDef *)config->dmac;
+		ll_dmac_channel_t *chx = dma_sf32lb_get_channel(dmac, channel);
 
-		ccrx = sys_read32(config->dmac + DMAC_CCRX(channel));
-		ccrx &= ~(DMAC_CCR1_EN | DMAC_CCR1_TCIE | DMAC_CCR1_HTIE | DMAC_CCR1_TEIE);
-		sys_write32(ccrx, config->dmac + DMAC_CCRX(channel));
+		ll_dmac_disable_channel(chx);
+		/* LL gap: ll_dmac.h has config-time IRQ bits but no post-config IRQ disable helpers. */
+		sys_clear_bits((mem_addr_t)&chx->CCR,
+			       DMAC_CCR1_TCIE | DMAC_CCR1_HTIE | DMAC_CCR1_TEIE);
 	}
 
 	config->irq_configure();

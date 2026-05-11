@@ -11,23 +11,13 @@
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/dma/sf32lb.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/sys_io.h>
 
-#include <register.h>
+#include <ll_spi.h>
 
 LOG_MODULE_REGISTER(spi_sf32lb, CONFIG_SPI_LOG_LEVEL);
 
 #include "spi_context.h"
-
-#define SPI_TOP_CTRL     offsetof(SPI_TypeDef, TOP_CTRL)
-#define SPI_INTE         offsetof(SPI_TypeDef, INTE)
-#define SPI_DATA         offsetof(SPI_TypeDef, DATA)
-#define SPI_STATUS       offsetof(SPI_TypeDef, STATUS)
-#define SPI_CLK_CTRL     offsetof(SPI_TypeDef, CLK_CTRL)
-#define SPI_TRIWIRE_CTRL offsetof(SPI_TypeDef, TRIWIRE_CTRL)
-#define SPI_FIFO_CTRL    offsetof(SPI_TypeDef, FIFO_CTRL)
-
-#define SPI_FLAG_FRLVL  (SPI_STATUS_RFL_Msk | SPI_STATUS_RNE_Msk)
-#define SPI_FRLVL_EMPTY (SPI_STATUS_RFL_Msk)
 
 #define SPI_MAX_BUSY_WAIT_US 1000U
 
@@ -61,6 +51,54 @@ struct spi_sf32lb_data {
 	uint32_t dma_status_flags;
 };
 
+static inline SPI_TypeDef *spi_sf32lb_regs(const struct spi_sf32lb_config *cfg)
+{
+	return (SPI_TypeDef *)cfg->base;
+}
+
+static inline uintptr_t spi_sf32lb_data_addr(const struct spi_sf32lb_config *cfg)
+{
+	return (uintptr_t)&spi_sf32lb_regs(cfg)->DATA;
+}
+
+static inline uint32_t spi_sf32lb_get_status(SPI_TypeDef *spi)
+{
+	/* LL gap: ll_spi exposes per-flag readers, not an aggregate STATUS snapshot. */
+	return sys_read32((mem_addr_t)&spi->STATUS);
+}
+
+static inline void spi_sf32lb_disable_transfer_irqs(SPI_TypeDef *spi)
+{
+	ll_spi_disable_it_tx_threshold(spi);
+	ll_spi_disable_it_rx_threshold(spi);
+	ll_spi_disable_it_timeout(spi);
+	/* LL gap: no helpers for EBCEI/PINTE enable bits. */
+	sys_clear_bits((mem_addr_t)&spi->INTE, SPI_INTE_EBCEI | SPI_INTE_PINTE);
+}
+
+static inline void spi_sf32lb_clear_error_flags(SPI_TypeDef *spi)
+{
+	ll_spi_clear_flag_ror(spi);
+	ll_spi_clear_flag_tur(spi);
+}
+
+static inline void spi_sf32lb_clear_poll_flags(SPI_TypeDef *spi)
+{
+	ll_spi_clear_flag_ror(spi);
+	ll_spi_clear_flag_tur(spi);
+	ll_spi_clear_flag_tint(spi);
+}
+
+static inline void spi_sf32lb_pulse_fifo_reset(SPI_TypeDef *spi)
+{
+	/*
+	 * LL gap: TSRE/RSRE are documented as DMA request helpers in ll_spi.h,
+	 * but this driver uses the same bits as FIFO reset pulses.
+	 */
+	sys_set_bits((mem_addr_t)&spi->FIFO_CTRL, SPI_FIFO_CTRL_TSRE | SPI_FIFO_CTRL_RSRE);
+	sys_clear_bits((mem_addr_t)&spi->FIFO_CTRL, SPI_FIFO_CTRL_TSRE | SPI_FIFO_CTRL_RSRE);
+}
+
 static bool spi_sf32lb_transfer_ongoing(struct spi_sf32lb_data *data)
 {
 	return spi_context_tx_on(&data->ctx) || spi_context_rx_on(&data->ctx);
@@ -71,10 +109,12 @@ void spi_sf32lb_complete(const struct device *dev, int status)
 {
 	const struct spi_sf32lb_config *cfg = dev->config;
 	struct spi_sf32lb_data *data = dev->data;
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 
-	sys_set_bits(cfg->base + SPI_STATUS, SPI_STATUS_ROR | SPI_STATUS_TUR);
+	spi_sf32lb_clear_error_flags(spi);
 
-	sys_clear_bits(cfg->base + SPI_INTE, SPI_INTE_RIE | SPI_INTE_TIE);
+	ll_spi_disable_it_rx_threshold(spi);
+	ll_spi_disable_it_tx_threshold(spi);
 
 	spi_context_complete(&data->ctx, dev, status);
 }
@@ -84,7 +124,8 @@ static void spi_sf32lb_isr(const struct device *dev)
 	const struct spi_sf32lb_config *cfg = dev->config;
 	struct spi_sf32lb_data *data = dev->data;
 	struct spi_context *ctx = &data->ctx;
-	uint32_t status = sys_read32(cfg->base + SPI_STATUS);
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
+	uint32_t status = spi_sf32lb_get_status(spi);
 	uint16_t tx_frame, rx_frame;
 	uint8_t word_size = SPI_WORD_SIZE_GET(ctx->config->operation);
 
@@ -95,33 +136,33 @@ static void spi_sf32lb_isr(const struct device *dev)
 
 	if (IS_BIT_SET(status, SPI_STATUS_RFS_Pos) && spi_context_rx_buf_on(ctx)) {
 		if (word_size == 8) {
-			rx_frame = sys_read8(cfg->base + SPI_DATA);
+			rx_frame = (uint8_t)ll_spi_receive_data32(spi);
 			UNALIGNED_PUT(rx_frame, (uint8_t *)data->ctx.rx_buf);
 			spi_context_update_rx(ctx, 1, 1);
 		} else {
-			rx_frame = sys_read32(cfg->base + SPI_DATA);
+			rx_frame = ll_spi_receive_data32(spi);
 			UNALIGNED_PUT(rx_frame, (uint16_t *)data->ctx.rx_buf);
 			spi_context_update_rx(ctx, 2, 1);
 		}
 
 		if (!spi_context_rx_buf_on(ctx)) {
-			sys_clear_bit(cfg->base + SPI_INTE, SPI_INTE_RIE_Pos);
+			ll_spi_disable_it_rx_threshold(spi);
 		}
 	}
 
 	if (IS_BIT_SET(status, SPI_STATUS_TNF_Pos) && spi_context_tx_buf_on(ctx)) {
 		if (word_size == 8) {
 			tx_frame = UNALIGNED_GET((uint8_t *)(data->ctx.tx_buf));
-			sys_write8(tx_frame, cfg->base + SPI_DATA);
+			ll_spi_transmit_data32(spi, tx_frame);
 			spi_context_update_tx(ctx, 1, 1);
 		} else {
 			tx_frame = UNALIGNED_GET((uint16_t *)(data->ctx.tx_buf));
-			sys_write32(tx_frame, cfg->base + SPI_DATA);
+			ll_spi_transmit_data32(spi, tx_frame);
 			spi_context_update_tx(ctx, 2, 1);
 		}
 
 		if (!spi_context_tx_buf_on(ctx)) {
-			sys_clear_bit(cfg->base + SPI_INTE, SPI_INTE_TIE_Pos);
+			ll_spi_disable_it_tx_threshold(spi);
 		}
 	}
 
@@ -135,10 +176,21 @@ static int spi_sf32lb_configure(const struct device *dev, const struct spi_confi
 {
 	const struct spi_sf32lb_config *cfg = dev->config;
 	struct spi_sf32lb_data *data = dev->data;
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 	int ret;
-	uint32_t top_ctrl = 0;
-	uint32_t clk_ctrl;
-	uint32_t triwire_ctrl = 0;
+	ll_spi_protocol_config_t protocol = {
+		.protocol = LL_SPI_PROTOCOL_SPI,
+		.clock_polarity = LL_SPI_CPOL_LOW,
+		.clock_phase = LL_SPI_CPHA_1EDGE,
+	};
+	ll_spi_role_config_t role = {
+		.frame_dir = LL_SPI_FRAME_MASTER,
+		.clock_dir = LL_SPI_CLOCK_MASTER,
+	};
+	ll_spi_frame_config_t frame = {0};
+	ll_spi_clock_config_t clock = {
+		.clk_sel = LL_SPI_CLOCKSRC_DIV,
+	};
 	uint32_t clk_div;
 	uint32_t clk_freq;
 	uint8_t word_size;
@@ -153,33 +205,34 @@ static int spi_sf32lb_configure(const struct device *dev, const struct spi_confi
 	}
 
 	if (SPI_OP_MODE_GET(config->operation) == SPI_OP_MODE_SLAVE) {
-		top_ctrl |= SPI_TOP_CTRL_SFRMDIR | SPI_TOP_CTRL_SCLKDIR;
+		role.frame_dir = LL_SPI_FRAME_SLAVE;
+		role.clock_dir = LL_SPI_CLOCK_SLAVE;
 	}
-	top_ctrl |= (config->operation & SPI_MODE_CPOL) ? SPI_TOP_CTRL_SPO : 0U;
-	top_ctrl |= (config->operation & SPI_MODE_CPHA) ? SPI_TOP_CTRL_SPH : 0U;
+	protocol.clock_polarity =
+		(config->operation & SPI_MODE_CPOL) ? LL_SPI_CPOL_HIGH : LL_SPI_CPOL_LOW;
+	protocol.clock_phase =
+		(config->operation & SPI_MODE_CPHA) ? LL_SPI_CPHA_2EDGE : LL_SPI_CPHA_1EDGE;
 
 	word_size = SPI_WORD_SIZE_GET(config->operation);
 	if (word_size == 8U) {
-		top_ctrl |= FIELD_PREP(SPI_TOP_CTRL_DSS_Msk, 8U - 1U);
+		frame.data_width = LL_SPI_DATAWIDTH_8BIT;
 	} else if (word_size == 16U) {
-		top_ctrl |= FIELD_PREP(SPI_TOP_CTRL_DSS_Msk, 16U - 1U);
+		frame.data_width = LL_SPI_DATAWIDTH_16BIT;
 	} else {
 		LOG_ERR("Unsupported word size: %u", word_size);
 		return -ENOTSUP;
 	}
 
 	if (SPI_FRAME_FORMAT_TI == (config->operation & SPI_FRAME_FORMAT_TI)) {
-		top_ctrl |= FIELD_PREP(SPI_TOP_CTRL_FRF_Msk, 0x00000001U);
-	} else {
-		top_ctrl |= FIELD_PREP(SPI_TOP_CTRL_FRF_Msk, 0x00000000U);
+		protocol.protocol = LL_SPI_PROTOCOL_TI_SSP;
 	}
 
 	if (SPI_HALF_DUPLEX == (config->operation & SPI_HALF_DUPLEX)) {
-		triwire_ctrl |= SPI_TRIWIRE_CTRL_SPI_TRI_WIRE_EN;
-		top_ctrl |= SPI_TOP_CTRL_TTE;
+		ll_spi_enable_three_wire(spi);
+		frame.tte = SPI_TOP_CTRL_TTE;
 	} else {
-		triwire_ctrl &= ~SPI_TRIWIRE_CTRL_SPI_TRI_WIRE_EN;
-		top_ctrl &= ~SPI_TOP_CTRL_TTE;
+		ll_spi_disable_three_wire(spi);
+		frame.tte = 0U;
 	}
 
 	if (config->operation & SPI_HOLD_ON_CS) {
@@ -190,22 +243,19 @@ static int spi_sf32lb_configure(const struct device *dev, const struct spi_confi
 		return -ENOTSUP;
 	}
 
-	sys_clear_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos);
+	ll_spi_disable(spi);
+	ll_spi_config_protocol(spi, &protocol);
+	ll_spi_config_role(spi, &role);
+	ll_spi_config_frame(spi, &frame);
 
-	sys_write32(top_ctrl, cfg->base + SPI_TOP_CTRL);
-	sys_write32(triwire_ctrl, cfg->base + SPI_TRIWIRE_CTRL);
-
-	sys_set_bit(cfg->base + SPI_CLK_CTRL, SPI_CLK_CTRL_CLK_SSP_EN_Pos);
 	clk_div = DIV_ROUND_UP(clk_freq,
 			       config->frequency); /* see Manual 7.2.6.2.4 clock freq settings */
-	clk_ctrl = sys_read32(cfg->base + SPI_CLK_CTRL);
-	clk_ctrl &= ~SPI_CLK_CTRL_CLK_DIV_Msk;
-	clk_ctrl |= FIELD_PREP(SPI_CLK_CTRL_CLK_DIV_Msk, clk_div);
-	sys_write32(clk_ctrl, cfg->base + SPI_CLK_CTRL);
+	clock.clk_div = clk_div;
+	ll_spi_config_clock(spi, &clock);
 
 	/* Issue 1401: Make SPO setting is valid before start transfer data*/
-	sys_set_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos);
-	sys_clear_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos);
+	ll_spi_enable(spi);
+	ll_spi_disable(spi);
 
 	data->ctx.config = config;
 
@@ -288,7 +338,7 @@ static int spi_sf32lb_dma_tx_load(const struct device *dev, const uint8_t *tx_bu
 	tx_dma_blk->dest_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
 	tx_dma_blk->block_size = len;
 	tx_dma_blk->source_address = (uint32_t)tx_buf;
-	tx_dma_blk->dest_address = (uint32_t)(cfg->base + SPI_DATA);
+	tx_dma_blk->dest_address = spi_sf32lb_data_addr(cfg);
 
 	ret = sf32lb_dma_config_dt(&cfg->tx_dma, tx_dma_cfg);
 	if (ret < 0) {
@@ -326,7 +376,7 @@ static int spi_sf32lb_dma_rx_load(const struct device *dev, uint8_t *rx_buf, siz
 	rx_dma_blk->source_addr_adj = DMA_ADDR_ADJ_NO_CHANGE;
 	rx_dma_blk->dest_addr_adj = DMA_ADDR_ADJ_INCREMENT;
 	rx_dma_blk->block_size = len;
-	rx_dma_blk->source_address = (uint32_t)(cfg->base + SPI_DATA);
+	rx_dma_blk->source_address = spi_sf32lb_data_addr(cfg);
 	rx_dma_blk->dest_address = (uint32_t)rx_buf;
 
 	ret = sf32lb_dma_config_dt(&cfg->rx_dma, rx_dma_cfg);
@@ -372,8 +422,8 @@ static int spi_sf32lb_transceive_dma(const struct device *dev, const struct spi_
 	struct spi_sf32lb_data *data = dev->data;
 	struct dma_config *rx_dma_cfg = &data->dma_rx.dma_cfg;
 	struct dma_config *tx_dma_cfg = &data->dma_tx.dma_cfg;
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 	uint8_t dfs;
-	uint32_t fifo_ctrl;
 	size_t chunk_len;
 	int ret;
 
@@ -390,19 +440,17 @@ static int spi_sf32lb_transceive_dma(const struct device *dev, const struct spi_
 
 	spi_context_buffers_setup(&data->ctx, tx_bufs, rx_bufs, dfs);
 
-	sys_clear_bits(cfg->base + SPI_INTE, SPI_INTE_TIE | SPI_INTE_RIE | SPI_INTE_EBCEI |
-						     SPI_INTE_TINTE | SPI_INTE_PINTE);
+	spi_sf32lb_disable_transfer_irqs(spi);
 
-	if (sys_test_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos)) {
-		sys_clear_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos);
+	if (ll_spi_is_enabled(spi)) {
+		ll_spi_disable(spi);
 	}
 
-	fifo_ctrl = sys_read32(cfg->base + SPI_FIFO_CTRL);
-	fifo_ctrl |= (SPI_FIFO_CTRL_RSRE | SPI_FIFO_CTRL_TSRE);
-	sys_write32(fifo_ctrl, cfg->base + SPI_FIFO_CTRL);
+	ll_spi_enable_dma_rx(spi);
+	ll_spi_enable_dma_tx(spi);
 
-	if (!sys_test_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos)) {
-		sys_set_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos);
+	if (!ll_spi_is_enabled(spi)) {
+		ll_spi_enable(spi);
 	}
 
 	spi_context_cs_control(&data->ctx, true);
@@ -437,11 +485,10 @@ static int spi_sf32lb_transceive_dma(const struct device *dev, const struct spi_
 static void spi_sf32lb_flush_rx_fifo(const struct device *dev)
 {
 	const struct spi_sf32lb_config *cfg = dev->config;
-	uint32_t spi_status = sys_read32(cfg->base + SPI_STATUS);
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 
-	while ((spi_status & SPI_FLAG_FRLVL) != SPI_FRLVL_EMPTY) {
-		(void)sys_read32(cfg->base + SPI_DATA);
-		spi_status = sys_read32(cfg->base + SPI_STATUS);
+	while (ll_spi_is_active_flag_rne(spi)) {
+		(void)ll_spi_receive_data32(spi);
 	}
 }
 
@@ -450,16 +497,15 @@ static void spi_sf32lb_reset_fifos(const struct device *dev)
 	const struct spi_sf32lb_config *cfg = dev->config;
 
 	/* Pulse both TX and RX FIFO reset bits to clear residual data */
-	sys_set_bits(cfg->base + SPI_FIFO_CTRL, SPI_FIFO_CTRL_TSRE | SPI_FIFO_CTRL_RSRE);
-	sys_clear_bits(cfg->base + SPI_FIFO_CTRL, SPI_FIFO_CTRL_TSRE | SPI_FIFO_CTRL_RSRE);
+	spi_sf32lb_pulse_fifo_reset(spi_sf32lb_regs(cfg));
 }
 
 static int spi_sf32lb_wait_not_busy(const struct device *dev)
 {
 	const struct spi_sf32lb_config *cfg = dev->config;
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 
-	if (!WAIT_FOR(!sys_test_bit(cfg->base + SPI_STATUS, SPI_STATUS_BSY_Pos),
-		SPI_MAX_BUSY_WAIT_US, NULL)) {
+	if (!WAIT_FOR(!ll_spi_is_active_flag_busy(spi), SPI_MAX_BUSY_WAIT_US, NULL)) {
 		return -ETIMEDOUT;
 	}
 
@@ -471,17 +517,18 @@ static int spi_sf32lb_shift_tx(const struct device *dev)
 	struct spi_sf32lb_data *data = dev->data;
 	const struct spi_sf32lb_config *cfg = dev->config;
 	struct spi_context *ctx = &data->ctx;
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 	uint16_t tx_frame = 0;
 
 	if (spi_context_tx_buf_on(ctx)) {
-		if (sys_test_bit(cfg->base + SPI_STATUS, SPI_STATUS_TNF_Pos)) {
+		if (ll_spi_is_active_flag_tnf(spi)) {
 			if (SPI_WORD_SIZE_GET(ctx->config->operation) == 8) {
 				tx_frame = UNALIGNED_GET((uint8_t *)(data->ctx.tx_buf));
-				sys_write8(tx_frame, cfg->base + SPI_DATA);
+				ll_spi_transmit_data32(spi, tx_frame);
 				spi_context_update_tx(ctx, 1, 1);
 			} else if (SPI_WORD_SIZE_GET(ctx->config->operation) == 16) {
 				tx_frame = UNALIGNED_GET((uint16_t *)(data->ctx.tx_buf));
-				sys_write32(tx_frame, cfg->base + SPI_DATA);
+				ll_spi_transmit_data32(spi, tx_frame);
 				spi_context_update_tx(ctx, 2, 1);
 			} else {
 				LOG_ERR("Unsupported word size: %u",
@@ -490,12 +537,12 @@ static int spi_sf32lb_shift_tx(const struct device *dev)
 			}
 		}
 	} else {
-		if (sys_test_bit(cfg->base + SPI_STATUS, SPI_STATUS_TNF_Pos)) {
+		if (ll_spi_is_active_flag_tnf(spi)) {
 			if (SPI_WORD_SIZE_GET(ctx->config->operation) == 8) {
-				sys_write8(tx_frame, cfg->base + SPI_DATA);
+				ll_spi_transmit_data32(spi, tx_frame);
 				spi_context_update_tx(ctx, 1, 1);
 			} else if (SPI_WORD_SIZE_GET(ctx->config->operation) == 16) {
-				sys_write32(tx_frame, cfg->base + SPI_DATA);
+				ll_spi_transmit_data32(spi, tx_frame);
 				spi_context_update_tx(ctx, 2, 1);
 			} else {
 				LOG_ERR("Unsupported word size: %u",
@@ -513,14 +560,15 @@ static int spi_sf32lb_shift_rx(const struct device *dev)
 	struct spi_sf32lb_data *data = dev->data;
 	const struct spi_sf32lb_config *cfg = dev->config;
 	struct spi_context *ctx = &data->ctx;
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 	uint16_t rx_frame = 0;
 
 	if (!spi_context_tx_buf_on(ctx) &&
-		sys_test_bit(cfg->base + SPI_STATUS, SPI_STATUS_TNF_Pos)) {
+		ll_spi_is_active_flag_tnf(spi)) {
 		if (SPI_WORD_SIZE_GET(ctx->config->operation) == 8) {
-			sys_write8(0U, cfg->base + SPI_DATA);
+			ll_spi_transmit_data32(spi, 0U);
 		} else if (SPI_WORD_SIZE_GET(ctx->config->operation) == 16) {
-			sys_write32(0U, cfg->base + SPI_DATA);
+			ll_spi_transmit_data32(spi, 0U);
 		} else {
 			LOG_ERR("Unsupported word size: %u",
 				SPI_WORD_SIZE_GET(ctx->config->operation));
@@ -529,13 +577,13 @@ static int spi_sf32lb_shift_rx(const struct device *dev)
 	}
 
 	if (spi_context_rx_buf_on(ctx)) {
-		if (sys_test_bit(cfg->base + SPI_STATUS, SPI_STATUS_RNE_Pos)) {
+		if (ll_spi_is_active_flag_rne(spi)) {
 			if (SPI_WORD_SIZE_GET(ctx->config->operation) == 8) {
-				rx_frame = sys_read8(cfg->base + SPI_DATA);
+				rx_frame = (uint8_t)ll_spi_receive_data32(spi);
 				UNALIGNED_PUT(rx_frame, (uint8_t *)data->ctx.rx_buf);
 				spi_context_update_rx(ctx, 1, 1);
 			} else if (SPI_WORD_SIZE_GET(ctx->config->operation) == 16) {
-				rx_frame = sys_read32(cfg->base + SPI_DATA);
+				rx_frame = ll_spi_receive_data32(spi);
 				UNALIGNED_PUT(rx_frame, (uint16_t *)data->ctx.rx_buf);
 				spi_context_update_rx(ctx, 2, 1);
 			} else {
@@ -545,12 +593,12 @@ static int spi_sf32lb_shift_rx(const struct device *dev)
 			}
 		}
 	} else {
-		if (sys_test_bit(cfg->base + SPI_STATUS, SPI_STATUS_RNE_Pos)) {
+		if (ll_spi_is_active_flag_rne(spi)) {
 			if (SPI_WORD_SIZE_GET(ctx->config->operation) == 8) {
-				(void)sys_read8(cfg->base + SPI_DATA);
+				(void)ll_spi_receive_data32(spi);
 				spi_context_update_rx(ctx, 1, 1);
 			} else if (SPI_WORD_SIZE_GET(ctx->config->operation) == 16) {
-				(void)sys_read32(cfg->base + SPI_DATA);
+				(void)ll_spi_receive_data32(spi);
 				spi_context_update_rx(ctx, 2, 1);
 			} else {
 				LOG_ERR("Unsupported word size: %u",
@@ -568,12 +616,13 @@ static int spi_sf32lb_frame_exchange(const struct device *dev)
 	struct spi_sf32lb_data *data = dev->data;
 	const struct spi_sf32lb_config *cfg = dev->config;
 	struct spi_context *ctx = &data->ctx;
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 	int ret = 0;
 
 	/* Check if the SPI is already enabled */
-	if (!sys_test_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos)) {
+	if (!ll_spi_is_enabled(spi)) {
 		/* Enable SPI peripheral */
-		sys_set_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos);
+		ll_spi_enable(spi);
 	}
 
 	if (spi_context_tx_on(ctx)) {
@@ -598,6 +647,7 @@ static int spi_sf32lb_transceive_poll(const struct device *dev, const struct spi
 {
 	const struct spi_sf32lb_config *cfg = dev->config;
 	struct spi_sf32lb_data *data = dev->data;
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 	uint8_t dfs;
 	int ret;
 
@@ -617,12 +667,12 @@ static int spi_sf32lb_transceive_poll(const struct device *dev, const struct spi
 	/* Restart peripheral to avoid residue between back-to-back transfers
 	 * when the same spi_config pointer is reused (concurrent test case).
 	 */
-	sys_clear_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos);
-	sys_set_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos);
+	ll_spi_disable(spi);
+	ll_spi_enable(spi);
 
 	spi_sf32lb_reset_fifos(dev);
 	spi_sf32lb_flush_rx_fifo(dev);
-	sys_set_bits(cfg->base + SPI_STATUS, SPI_STATUS_ROR | SPI_STATUS_TUR | SPI_STATUS_TINT);
+	spi_sf32lb_clear_poll_flags(spi);
 	do {
 		ret = spi_sf32lb_frame_exchange(dev);
 		if (ret < 0) {
@@ -666,6 +716,7 @@ static int spi_sf32lb_transceive_async(const struct device *dev, const struct sp
 {
 	const struct spi_sf32lb_config *cfg = dev->config;
 	struct spi_sf32lb_data *data = dev->data;
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 	uint8_t dfs;
 	int ret;
 
@@ -681,23 +732,24 @@ static int spi_sf32lb_transceive_async(const struct device *dev, const struct sp
 	spi_context_buffers_setup(&data->ctx, tx_bufs, rx_bufs, dfs);
 	spi_context_cs_control(&data->ctx, true);
 
-	sys_set_bits(cfg->base + SPI_STATUS, SPI_STATUS_ROR | SPI_STATUS_TUR);
+	spi_sf32lb_clear_error_flags(spi);
 
-	sys_clear_bits(cfg->base + SPI_INTE, SPI_INTE_RIE | SPI_INTE_TIE);
+	ll_spi_disable_it_rx_threshold(spi);
+	ll_spi_disable_it_tx_threshold(spi);
 
 	if (spi_context_tx_buf_on(&data->ctx)) {
-		sys_set_bit(cfg->base + SPI_INTE, SPI_INTE_TIE_Pos);
+		ll_spi_enable_it_tx_threshold(spi);
 	}
 	if (spi_context_rx_buf_on(&data->ctx)) {
-		sys_set_bit(cfg->base + SPI_INTE, SPI_INTE_RIE_Pos);
+		ll_spi_enable_it_rx_threshold(spi);
 	}
 
 	/* Enable error interrupt */
-	sys_set_bit(cfg->base + SPI_INTE, SPI_INTE_TINTE_Pos);
+	ll_spi_enable_it_timeout(spi);
 
 	/* Enable SPI peripheral if not already enabled */
-	if (!sys_test_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos)) {
-		sys_set_bit(cfg->base + SPI_TOP_CTRL, SPI_TOP_CTRL_SSE_Pos);
+	if (!ll_spi_is_enabled(spi)) {
+		ll_spi_enable(spi);
 	}
 
 	ret = spi_context_wait_for_completion(&data->ctx);

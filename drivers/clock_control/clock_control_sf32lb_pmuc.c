@@ -15,14 +15,8 @@
 #include <zephyr/sys/util.h>
 
 #include <zephyr/dt-bindings/clock/sf32lb-pmuc-clocks.h>
-#include <register.h>
+#include <ll_pmuc.h>
 
-#define PMUC_CR       offsetof(PMUC_TypeDef, CR)
-#define PMUC_LRC10_CR offsetof(PMUC_TypeDef, LRC10_CR)
-#define PMUC_LRC32_CR offsetof(PMUC_TypeDef, LRC32_CR)
-#define PMUC_LXT_CR   offsetof(PMUC_TypeDef, LXT_CR)
-
-#define PMUC_LXT_CR_EN        PMUC_LXT_CR_EN_Msk
 #define PMUC_LXT_BM_VALUE     0x2U
 #define PMUC_LXT_AMP_BM_VALUE 0x3U
 
@@ -60,20 +54,22 @@ struct sf32lb_pmuc_clk_config {
 
 static void sf32lb_pmuc_select_lpclk(const struct sf32lb_pmuc_clk_config *config)
 {
-	uint32_t val = sys_read32(config->base + PMUC_CR);
+	PMUC_TypeDef *pmuc = (PMUC_TypeDef *)config->base;
+	uint32_t lpclk = LL_PMUC_LPCLK_LRC10;
 
 	if (config->clkwdt_src == SF32LB_CLKWDT_SRC_LRC32) {
-		val |= PMUC_CR_SEL_LPCLK;
-	} else {
-		val &= ~PMUC_CR_SEL_LPCLK;
+		lpclk = LL_PMUC_LPCLK_LRC32;
 	}
 
-	sys_write32(val, config->base + PMUC_CR);
+	ll_pmuc_select_lpclk(pmuc, lpclk);
 }
 
 static int sf32lb_pmuc_lxt32_on(const struct sf32lb_pmuc_clk_config *config)
 {
-	uint32_t val;
+	PMUC_TypeDef *pmuc = (PMUC_TypeDef *)config->base;
+	mem_addr_t lxt_cr = (mem_addr_t)&pmuc->LXT_CR;
+	uint32_t mask;
+	uint32_t value;
 	int ret;
 
 	ret = pinctrl_apply_state(config->pcfg, PINCTRL_STATE_DEFAULT);
@@ -82,15 +78,17 @@ static int sf32lb_pmuc_lxt32_on(const struct sf32lb_pmuc_clk_config *config)
 	}
 
 	/* Configure bias current and enable in a single write */
-	val = sys_read32(config->base + PMUC_LXT_CR);
-	val &= ~(PMUC_LXT_CR_EN | PMUC_LXT_CR_RSN | PMUC_LXT_CR_CAP_SEL | PMUC_LXT_CR_BM_Msk |
-		 PMUC_LXT_CR_AMP_BM_Msk);
-	val |= FIELD_PREP(PMUC_LXT_CR_BM_Msk, PMUC_LXT_BM_VALUE) |
-	       FIELD_PREP(PMUC_LXT_CR_AMP_BM_Msk, PMUC_LXT_AMP_BM_VALUE) | PMUC_LXT_CR_EN |
-	       PMUC_LXT_CR_RSN;
-	sys_write32(val, config->base + PMUC_LXT_CR);
+	/* LL gap: ll_pmuc exposes LXT enable/ready, not BM/AMP_BM/RSN tuning. */
+	mask = PMUC_LXT_CR_EN | PMUC_LXT_CR_RSN | PMUC_LXT_CR_CAP_SEL | PMUC_LXT_CR_BM_Msk |
+	       PMUC_LXT_CR_AMP_BM_Msk;
+	value = sys_read32(lxt_cr);
+	value &= ~mask;
+	value |= FIELD_PREP(PMUC_LXT_CR_BM_Msk, PMUC_LXT_BM_VALUE) |
+		 FIELD_PREP(PMUC_LXT_CR_AMP_BM_Msk, PMUC_LXT_AMP_BM_VALUE) | PMUC_LXT_CR_EN |
+		 PMUC_LXT_CR_RSN;
+	sys_write32(value, lxt_cr);
 
-	while (sys_test_bit(config->base + PMUC_LXT_CR, PMUC_LXT_CR_RDY_Pos) == 0U) {
+	while (ll_pmuc_is_lxt32_ready(pmuc) == 0U) {
 	}
 
 	return 0;
@@ -98,7 +96,10 @@ static int sf32lb_pmuc_lxt32_on(const struct sf32lb_pmuc_clk_config *config)
 
 static int sf32lb_pmuc_lxt32_off(const struct sf32lb_pmuc_clk_config *config)
 {
-	sys_clear_bits(config->base + PMUC_LXT_CR, PMUC_LXT_CR_EN | PMUC_LXT_CR_RSN);
+	PMUC_TypeDef *pmuc = (PMUC_TypeDef *)config->base;
+
+	/* LL gap: disabling LXT32 here must clear RSN together with EN. */
+	sys_clear_bits((mem_addr_t)&pmuc->LXT_CR, PMUC_LXT_CR_EN | PMUC_LXT_CR_RSN);
 
 	return 0;
 }
@@ -106,17 +107,18 @@ static int sf32lb_pmuc_lxt32_off(const struct sf32lb_pmuc_clk_config *config)
 static int sf32lb_pmuc_clk_on(const struct device *dev, clock_control_subsys_t sys)
 {
 	const struct sf32lb_pmuc_clk_config *config = dev->config;
+	PMUC_TypeDef *pmuc = (PMUC_TypeDef *)config->base;
 	uint32_t id = (uint32_t)(uintptr_t)sys;
 
 	switch (id) {
 	case SF32LB_PMUC_CLOCK_LRC10:
-		sys_set_bit(config->base + PMUC_LRC10_CR, PMUC_LRC10_CR_EN_Pos);
-		while (sys_test_bit(config->base + PMUC_LRC10_CR, PMUC_LRC10_CR_RDY_Pos) == 0U) {
+		ll_pmuc_enable_lrc10(pmuc);
+		while (ll_pmuc_is_lrc10_ready(pmuc) == 0U) {
 		}
 		return 0;
 	case SF32LB_PMUC_CLOCK_LRC32:
-		sys_set_bit(config->base + PMUC_LRC32_CR, PMUC_LRC32_CR_EN_Pos);
-		while (sys_test_bit(config->base + PMUC_LRC32_CR, PMUC_LRC32_CR_RDY_Pos) == 0U) {
+		ll_pmuc_enable_lrc32(pmuc);
+		while (ll_pmuc_is_lrc32_ready(pmuc) == 0U) {
 		}
 		return 0;
 	case SF32LB_PMUC_CLOCK_LXT32:
@@ -134,14 +136,15 @@ static int sf32lb_pmuc_clk_on(const struct device *dev, clock_control_subsys_t s
 static int sf32lb_pmuc_clk_off(const struct device *dev, clock_control_subsys_t sys)
 {
 	const struct sf32lb_pmuc_clk_config *config = dev->config;
+	PMUC_TypeDef *pmuc = (PMUC_TypeDef *)config->base;
 	uint32_t id = (uint32_t)(uintptr_t)sys;
 
 	switch (id) {
 	case SF32LB_PMUC_CLOCK_LRC10:
-		sys_clear_bit(config->base + PMUC_LRC10_CR, PMUC_LRC10_CR_EN_Pos);
+		ll_pmuc_disable_lrc10(pmuc);
 		return 0;
 	case SF32LB_PMUC_CLOCK_LRC32:
-		sys_clear_bit(config->base + PMUC_LRC32_CR, PMUC_LRC32_CR_EN_Pos);
+		ll_pmuc_disable_lrc32(pmuc);
 		return 0;
 	case SF32LB_PMUC_CLOCK_LXT32:
 		if (config->has_lxt32 == 0U) {
@@ -159,31 +162,28 @@ static enum clock_control_status sf32lb_pmuc_clk_get_status(const struct device 
 							    clock_control_subsys_t sys)
 {
 	const struct sf32lb_pmuc_clk_config *config = dev->config;
+	PMUC_TypeDef *pmuc = (PMUC_TypeDef *)config->base;
 	uint32_t id = (uint32_t)(uintptr_t)sys;
-	uintptr_t reg;
-	uint32_t bit;
+	uint32_t ready;
 
 	switch (id) {
 	case SF32LB_PMUC_CLOCK_LRC10:
-		reg = config->base + PMUC_LRC10_CR;
-		bit = PMUC_LRC10_CR_RDY_Pos;
+		ready = ll_pmuc_is_lrc10_ready(pmuc);
 		break;
 	case SF32LB_PMUC_CLOCK_LRC32:
-		reg = config->base + PMUC_LRC32_CR;
-		bit = PMUC_LRC32_CR_RDY_Pos;
+		ready = ll_pmuc_is_lrc32_ready(pmuc);
 		break;
 	case SF32LB_PMUC_CLOCK_LXT32:
 		if (config->has_lxt32 == 0U) {
 			return CLOCK_CONTROL_STATUS_OFF;
 		}
-		reg = config->base + PMUC_LXT_CR;
-		bit = PMUC_LXT_CR_RDY_Pos;
+		ready = ll_pmuc_is_lxt32_ready(pmuc);
 		break;
 	default:
 		return CLOCK_CONTROL_STATUS_OFF;
 	}
 
-	if (sys_test_bit(reg, bit) != 0U) {
+	if (ready != 0U) {
 		return CLOCK_CONTROL_STATUS_ON;
 	}
 

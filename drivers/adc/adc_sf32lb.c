@@ -11,25 +11,18 @@
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/irq.h>
+#include <zephyr/sys/sys_io.h>
 
-#include <register.h>
+#include <ll_gpadc.h>
 
 LOG_MODULE_REGISTER(adc_sf32lb, CONFIG_ADC_LOG_LEVEL);
 
 #define ADC_CONTEXT_USES_KERNEL_TIMER
 #include "adc_context.h"
 
-#define ADC_CFG_REG1 offsetof(GPADC_TypeDef, ADC_CFG_REG1)
-#define ADC_SLOT_REG offsetof(GPADC_TypeDef, ADC_SLOT0_REG)
-#define ADC_RDATA    offsetof(GPADC_TypeDef, ADC_RDATA0)
-#define ADC_CTRL_REG offsetof(GPADC_TypeDef, ADC_CTRL_REG)
-#define GPADC_IRQ    offsetof(GPADC_TypeDef, GPADC_IRQ)
-
 #define SYS_CFG_ANAU_CR offsetof(HPSYS_CFG_TypeDef, ANAU_CR)
 
-#define ADC_MAX_CH       (8U)
-#define ADC_RDATAX(n)    (ADC_RDATA + (((n) >> 1) * 4U))
-#define ADC_SLOT_REGX(n) (ADC_SLOT_REG + (n) * 4U)
+#define ADC_MAX_CH (8U)
 
 #define ADC_SF32LB_DEFAULT_VREF_INTERNAL 3300
 
@@ -55,26 +48,20 @@ static void adc_sf32lb_isr(const struct device *dev)
 {
 	const struct adc_sf32lb_config *config = dev->config;
 	struct adc_sf32lb_data *data = dev->data;
+	GPADC_TypeDef *gpadc = (GPADC_TypeDef *)config->base;
 	uint16_t channel;
-	uint32_t adc_data;
 	uint32_t channels;
 
-	if (!sys_test_bit(config->base + GPADC_IRQ, GPADC_GPADC_IRQ_GPADC_IRSR_Pos)) {
+	if (ll_gpadc_is_active_flag_irq_raw(gpadc) == 0U) {
 		return;
 	}
 
-	sys_set_bit(config->base + GPADC_IRQ, GPADC_GPADC_IRQ_GPADC_ICR_Pos);
+	ll_gpadc_clear_flag_irq(gpadc);
 
 	channels = data->channels;
 	while (channels) {
 		channel = find_lsb_set(channels) - 1;
-		adc_data = sys_read32(config->base + ADC_RDATAX(channel));
-
-		if (channel & 1) {
-			*data->buffer++ = FIELD_GET(GPADC_ADC_RDATA0_SLOT1_RDATA, adc_data);
-		} else {
-			*data->buffer++ = FIELD_GET(GPADC_ADC_RDATA0_SLOT0_RDATA, adc_data);
-		}
+		*data->buffer++ = ll_gpadc_get_slot_data(gpadc, channel);
 
 		channels &= ~BIT(channel);
 	}
@@ -86,8 +73,11 @@ static int adc_sf32lb_channel_setup(const struct device *dev,
 				    const struct adc_channel_cfg *channel_cfg)
 {
 	const struct adc_sf32lb_config *config = dev->config;
+	GPADC_TypeDef *gpadc = (GPADC_TypeDef *)config->base;
+	ll_gpadc_slot_config_t slot_config = {
+		.slot_enable = 1U,
+	};
 	uint8_t channel_id;
-	uint32_t adc_slot = 0;
 
 	channel_id = channel_cfg->channel_id;
 
@@ -111,18 +101,12 @@ static int adc_sf32lb_channel_setup(const struct device *dev,
 		return -ENOTSUP;
 	}
 
-	adc_slot &= ~(GPADC_ADC_SLOT0_REG_NCHNL_SEL | GPADC_ADC_SLOT0_REG_PCHNL_SEL |
-		      GPADC_ADC_SLOT0_REG_ACC_NUM | GPADC_ADC_SLOT0_REG_SLOT_EN);
-
+	slot_config.p_channel = channel_id;
 	if (channel_cfg->differential) {
-		adc_slot |= FIELD_PREP(GPADC_ADC_SLOT0_REG_PCHNL_SEL, channel_id);
-		adc_slot |= FIELD_PREP(GPADC_ADC_SLOT0_REG_NCHNL_SEL, channel_id);
-	} else {
-		adc_slot |= FIELD_PREP(GPADC_ADC_SLOT0_REG_PCHNL_SEL, channel_id);
+		slot_config.n_channel = channel_id;
 	}
 
-	adc_slot |= GPADC_ADC_SLOT0_REG_SLOT_EN;
-	sys_write32(adc_slot, config->base + ADC_SLOT_REGX(channel_id));
+	ll_gpadc_config_slot(gpadc, channel_id, &slot_config);
 
 	return 0;
 }
@@ -156,8 +140,9 @@ static int check_buffer_size(const struct adc_sequence *sequence, uint8_t active
 static void adc_sf32lb_start_conversion(const struct device *dev)
 {
 	const struct adc_sf32lb_config *const cfg = dev->config;
+	GPADC_TypeDef *gpadc = (GPADC_TypeDef *)cfg->base;
 
-	sys_set_bit(cfg->base + ADC_CTRL_REG, GPADC_ADC_CTRL_REG_ADC_START_Pos);
+	ll_gpadc_request_start(gpadc);
 }
 
 static void adc_context_start_sampling(struct adc_context *ctx)
@@ -261,8 +246,21 @@ static int adc_sf32lb_init(const struct device *dev)
 {
 	const struct adc_sf32lb_config *config = dev->config;
 	struct adc_sf32lb_data *data = dev->data;
+	GPADC_TypeDef *gpadc = (GPADC_TypeDef *)config->base;
+	ll_gpadc_mode_config_t mode_config = {
+		.op_mode = LL_GPADC_OP_MODE_SINGLE,
+		.init_time = 8U,
+	};
+	ll_gpadc_clock_config_t clock_config = {
+		.data_samp_dly = 2U,
+	};
+	ll_gpadc_trigger_config_t trigger_config = {
+		.timer_enable = 0U,
+	};
+	ll_gpadc_slot_config_t slot_config = {
+		.slot_enable = 0U,
+	};
 	int ret;
-	uint32_t value;
 
 	if (!sf32lb_clock_is_ready_dt(&config->clock)) {
 		return -ENODEV;
@@ -277,28 +275,26 @@ static int adc_sf32lb_init(const struct device *dev)
 	if (ret < 0) {
 		return ret;
 	}
-	/* enable bandgap */
+
+	/* LL gap: HPSYS_CFG ANAU bandgap control is not covered by ll_gpadc.h. */
 	sys_set_bit(config->cfg_base + SYS_CFG_ANAU_CR, HPSYS_CFG_ANAU_CR_EN_BG_Pos);
 
-	value = sys_read32(config->base + ADC_CTRL_REG);
-	/* Clear timer trigger and DMA enable bits */
-	value &= ~(GPADC_ADC_CTRL_REG_GPIO_TRIG_EN | GPADC_ADC_CTRL_REG_TIMER_TRIG_EN |
-		   GPADC_ADC_CTRL_REG_INIT_TIME | GPADC_ADC_CTRL_REG_DATA_SAMP_DLY |
-		   GPADC_ADC_CTRL_REG_FRC_EN_ADC);
-
-	value |= FIELD_PREP(GPADC_ADC_CTRL_REG_INIT_TIME_Msk, 8);
-	value |= FIELD_PREP(GPADC_ADC_CTRL_REG_DATA_SAMP_DLY_Msk, 2);
-
-	sys_write32(value, config->base + ADC_CTRL_REG);
+	/* LL gap: GPIO trigger enable has no GPADC LL helper. */
+	sys_clear_bits((mem_addr_t)&gpadc->ADC_CTRL_REG, GPADC_ADC_CTRL_REG_GPIO_TRIG_EN);
+	ll_gpadc_config_trigger(gpadc, &trigger_config);
+	ll_gpadc_config_mode(gpadc, &mode_config);
+	ll_gpadc_config_clock(gpadc, &clock_config);
+	ll_gpadc_disable_core(gpadc);
 
 	/* enable ref ldo */
-	sys_set_bits(config->base + ADC_CFG_REG1, GPADC_ADC_CFG_REG1_ANAU_GPADC_SE |
-							  GPADC_ADC_CFG_REG1_ANAU_GPADC_EN_V18 |
-							  GPADC_ADC_CFG_REG1_ANAU_GPADC_LDOREF_EN);
+	/* LL gap: use narrow register updates for SE and V18 instead of full analog reconfig. */
+	sys_set_bits((mem_addr_t)&gpadc->ADC_CFG_REG1,
+		     GPADC_ADC_CFG_REG1_ANAU_GPADC_SE | GPADC_ADC_CFG_REG1_ANAU_GPADC_EN_V18);
+	ll_gpadc_enable_ldoref(gpadc);
 	k_busy_wait(SF32LB_ADC_WAIT_TIME_US); /* wait for stable */
 	/* disable all slots */
 	for (uint8_t i = 0; i < 8U; i++) {
-		sys_clear_bit(config->base + ADC_SLOT_REGX(i), GPADC_ADC_SLOT0_REG_SLOT_EN_Pos);
+		ll_gpadc_config_slot(gpadc, i, &slot_config);
 	}
 
 	config->irq_config_func();
