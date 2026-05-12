@@ -140,6 +140,18 @@ struct flash_sf32lb_mpi_qspi_nor_data {
 	struct k_spinlock lock;
 };
 
+static __ramfunc void *qspi_nor_memcpy(void *dst, const void *src, size_t len)
+{
+	const uint8_t *csrc = src;
+	uint8_t *cdst = dst;
+
+	while (len--) {
+		*cdst++ = *csrc++;
+	}
+
+	return dst;
+}
+
 static __ramfunc void qspi_nor_cinstr(const struct device *dev, uint8_t cmd)
 {
 	struct flash_sf32lb_mpi_qspi_nor_data *data = dev->data;
@@ -217,13 +229,13 @@ static __ramfunc void qspi_nor_read_fifo(const struct device *dev, uint8_t cmd, 
 		for (size_t i = 0U; i < (chunk_len / 4U); i++) {
 			uint32_t dr = sys_read32(data->mpi + MPI_DR);
 
-			memcpy(&cbuf[i * 4U], &dr, 4U);
+			qspi_nor_memcpy(&cbuf[i * 4U], &dr, 4U);
 		}
 
 		if (chunk_len & 3U) {
 			uint32_t dr = sys_read32(data->mpi + MPI_DR);
 
-			memcpy(&cbuf[chunk_len & ~3U], &dr, chunk_len & 3U);
+			qspi_nor_memcpy(&cbuf[chunk_len & ~3U], &dr, chunk_len & 3U);
 		}
 
 		len -= chunk_len;
@@ -249,14 +261,14 @@ static __ramfunc void qspi_nor_write_fifo(const struct device *dev, uint8_t cmd,
 		for (size_t i = 0U; i < (chunk_len / 4U); i++) {
 			uint32_t dr = 0U;
 
-			memcpy(&dr, &cbuf[i * 4U], 4U);
+			qspi_nor_memcpy(&dr, &cbuf[i * 4U], 4U);
 			sys_write32(dr, data->mpi + MPI_DR);
 		}
 
 		if (chunk_len & 3U) {
 			uint32_t dr = 0U;
 
-			memcpy(&dr, &cbuf[chunk_len & ~3U], chunk_len & 3U);
+			qspi_nor_memcpy(&dr, &cbuf[chunk_len & ~3U], chunk_len & 3U);
 			sys_write32(dr, data->mpi + MPI_DR);
 		}
 
