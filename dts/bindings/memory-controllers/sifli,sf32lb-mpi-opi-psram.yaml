@@ -1,0 +1,49 @@
+# Copyright (c) 2025 SiFli Technologies Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
+title: SiFli SF32LB Memory Peripheral Interface (MPI) in OPI PSRAM mode.
+
+description: |
+  This driver supports internal OPI PSRAM on SF32LB52x series chips.
+  The PSRAM is connected to MPI1 and operates in Octal-SPI mode.
+
+examples:
+  - |
+    &mpi1 {
+      compatible = "sifli,sf32lb-mpi-opi-psram";
+      reg = <0x50041000 0x1000>, <0x60000000 DT_SIZE_M(8)>;
+      reg-names = "ctrl", "psram";
+      clocks = <&rcc_clk SF32LB52X_CLOCK_MPI1>;
+      pinctrl-0 = <&mpi1_default>;
+      pinctrl-names = "default";
+      power-supply = <&ldo1_1v8>;
+      status = "okay";
+    };
+
+compatible: "sifli,sf32lb-mpi-opi-psram"
+
+include: [base.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+    description: |
+      Memory-mapped addresses for MPI controller and PSRAM memory region.
+      First entry is the MPI controller registers, second is the PSRAM
+      memory-mapped region.
+
+  reg-names:
+    required: true
+    description: |
+      Names for the reg entries. Must be "ctrl" and "psram".
+
+  clocks:
+    required: true
+    description: |
+      Clock source for the MPI controller.
+
+  power-supply:
+    type: phandle
+    description: |
+      Reference to the regulator that supplies power to the PSRAM.
+      For SF32LB525/527, this is typically the internal 1.8V LDO (ldo1_1v8).

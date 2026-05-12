@@ -1,0 +1,11 @@
+# Copyright (c) 2025 SiFli Technologies Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
+config MEMC_SF32LB_MPI_OPI_PSRAM
+	bool "SiFli SF32LB MPI OPI PSRAM driver"
+	default y
+	depends on DT_HAS_SIFLI_SF32LB_MPI_OPI_PSRAM_ENABLED
+	depends on SOC_SERIES_SF32LB52X
+	help
+	  Enable the SiFli SF32LB MPI OPI PSRAM memory controller driver.
+	  This driver supports internal OPI PSRAM on SF32LB52x series chips.

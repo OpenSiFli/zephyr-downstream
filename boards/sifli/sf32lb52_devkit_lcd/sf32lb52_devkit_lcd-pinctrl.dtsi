@@ -39,6 +39,33 @@
 			bias-pull-down;
 		};
 	};
+	
+	/* MPI1 OPI PSRAM pinmux configuration */
+	mpi1_default: mpi1_default {
+		group1 {
+			pinmux = <SA01_MPI1_DIO0>, <SA02_MPI1_DIO1>,
+				 <SA03_MPI1_DIO2>, <SA04_MPI1_DIO3>,
+				 <SA08_MPI1_DIO4>, <SA09_MPI1_DIO5>,
+				 <SA10_MPI1_DIO6>, <SA11_MPI1_DIO7>,
+				 <SA12_MPI1_DQSDM>;
+			bias-pull-down;
+			input-enable;
+			input-schmitt-enable;
+			slew-rate=<1>;
+		};
+
+		group2 {
+			pinmux = <SA07_MPI1_CLK>, <SA05_MPI1_CS>;
+			input-enable;
+			input-schmitt-enable;
+			slew-rate=<1>;
+		};
+
+		/* SA00 and SA06 are power supply pins, configure as analog */
+		group3 {
+			pinmux = <SA00_ANALOG>, <SA06_ANALOG>;
+		};
+	};
 
 	lxt32_default: lxt32_default {
 		group1 {
