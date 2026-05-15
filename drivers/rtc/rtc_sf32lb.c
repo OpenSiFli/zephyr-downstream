@@ -118,6 +118,9 @@ static inline void rtc_sf32lb_wait_for_sync(const struct device *dev)
 	const struct rtc_sf32lb_config *config = dev->config;
 
 	sys_clear_bit(config->base + RTC_ISR, RTC_ISR_RSF_Pos);
+
+	while (!sys_test_bit(config->base + RTC_ISR, RTC_ISR_RSF_Pos)) {
+	}
 }
 
 static int rtc_sf32lb_set_time(const struct device *dev, const struct rtc_time *timeptr)
@@ -126,30 +129,25 @@ static int rtc_sf32lb_set_time(const struct device *dev, const struct rtc_time *
 	uint32_t tr = 0;
 	uint32_t dr = 0;
 
-	tr = FIELD_PREP(RTC_TR_HT_Msk | RTC_TR_HU_Msk, bin2bcd(timeptr->tm_hour)) |
-	     FIELD_PREP(RTC_TR_MNT_Msk | RTC_TR_MNU_Msk, bin2bcd(timeptr->tm_min)) |
-	     FIELD_PREP(RTC_TR_ST_Msk | RTC_TR_SU_Msk, bin2bcd(timeptr->tm_sec)) |
-	     FIELD_PREP(RTC_TR_SS_Msk, timeptr->tm_nsec * RC10K_DIVA_FRAC / 1000000000U);
-
-	rtc_sf32lb_enter_init_mode(dev);
-	sys_write32(tr, config->base + RTC_TIMER);
-	rtc_sf32lb_exit_init_mode(dev);
-
-	if (!sys_test_bit(config->base + RTC_CR, RTC_CR_BYPSHAD_Pos)) {
-		rtc_sf32lb_wait_for_sync(dev);
-	}
-
 	if (timeptr->tm_year < 100) { /* 20th century */
 		dr |= RTC_DR_CB;
 		dr |= FIELD_PREP(RTC_DR_YT_Msk | RTC_DR_YU_Msk, bin2bcd(timeptr->tm_year));
 	} else {
 		dr |= FIELD_PREP(RTC_DR_YT_Msk | RTC_DR_YU_Msk, bin2bcd(timeptr->tm_year - 100));
 	}
+
+	tr = FIELD_PREP(RTC_TR_HT_Msk | RTC_TR_HU_Msk, bin2bcd(timeptr->tm_hour)) |
+	     FIELD_PREP(RTC_TR_MNT_Msk | RTC_TR_MNU_Msk, bin2bcd(timeptr->tm_min)) |
+	     FIELD_PREP(RTC_TR_ST_Msk | RTC_TR_SU_Msk, bin2bcd(timeptr->tm_sec)) |
+	     FIELD_PREP(RTC_TR_SS_Msk, timeptr->tm_nsec * RC10K_DIVA_FRAC / 1000000000U);
+
 	dr |= FIELD_PREP(RTC_DR_MT_Msk | RTC_DR_MU_Msk, bin2bcd(timeptr->tm_mon + 1)) |
 	      FIELD_PREP(RTC_DR_DT_Msk | RTC_DR_DU_Msk, bin2bcd(timeptr->tm_mday)) |
 	      FIELD_PREP(RTC_DR_WD_Msk, timeptr->tm_wday);
 
+	/* Write TR and DR in a single INIT session to ensure consistency */
 	rtc_sf32lb_enter_init_mode(dev);
+	sys_write32(tr, config->base + RTC_TIMER);
 	sys_write32(dr, config->base + RTC_DATER);
 	rtc_sf32lb_exit_init_mode(dev);
 
@@ -164,6 +162,11 @@ static int rtc_sf32lb_get_time(const struct device *dev, struct rtc_time *timept
 {
 	const struct rtc_sf32lb_config *config = dev->config;
 	uint32_t reg;
+
+	/* Ensure shadow registers are synchronized before reading */
+	if (!sys_test_bit(config->base + RTC_CR, RTC_CR_BYPSHAD_Pos)) {
+		rtc_sf32lb_wait_for_sync(dev);
+	}
 
 	reg = sys_read32(config->cfg + SYS_CFG_RTC_TR);
 
@@ -374,10 +377,6 @@ static int rtc_sf32lb_init(const struct device *dev)
 	psclr |= FIELD_PREP(RTC_PSCLR_DIVA_FRAC_Msk, RC10K_DIVA_FRAC);
 	psclr |= FIELD_PREP(RTC_PSCLR_DIVB_Msk, RC10K_DIVB);
 	sys_write32(psclr, config->base + RTC_PSCLR);
-
-	if (!sys_test_bit(config->base + RTC_CR, RTC_CR_BYPSHAD_Pos)) {
-		rtc_sf32lb_wait_for_sync(dev);
-	}
 
 #ifdef CONFIG_RTC_ALARM
 	if (config->irq_config_func) {
