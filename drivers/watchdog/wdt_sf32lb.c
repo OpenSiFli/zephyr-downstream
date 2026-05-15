@@ -8,15 +8,14 @@
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/logging/log.h>
 
-#include <register.h>
+#include <ll_pmuc.h>
 
 LOG_MODULE_REGISTER(wdt_sf32lb, CONFIG_WDT_LOG_LEVEL);
 
+/* LL gap: the target HAL revision has PMUC LL APIs, but no WDT LL header. */
 #define WDT_CVR0        offsetof(WDT_TypeDef, WDT_CVR0)
 #define WDT_CR          offsetof(WDT_TypeDef, WDT_CR)
 #define WDT_CCR         offsetof(WDT_TypeDef, WDT_CCR)
-
-#define PMUC_WER        offsetof(PMUC_TypeDef, WER)
 
 #define HPSYS_CFG_SYSCR offsetof(HPSYS_CFG_TypeDef, SYSCR)
 
@@ -151,13 +150,15 @@ static int wdt_sf32lb_init(const struct device *dev)
 	const struct wdt_sf32lb_config *config = dev->config;
 	uint32_t cr;
 
+	/* LL gap: the target HAL revision has PMUC LL APIs, but no WDT LL header. */
 	cr = sys_read32(config->base + WDT_CR);
 	cr &= ~WDT_WDT_CR_RESPONSE_MODE_Msk;
 	cr |= WDT_WDT_CR_RESPONSE_MODE1;
 	sys_write32(cr, config->base + WDT_CR);
 
-	sys_set_bit(config->pmuc + PMUC_WER, PMUC_WER_WDT1_Pos);
+	ll_pmuc_enable_wakeup_source((PMUC_TypeDef *)config->pmuc, LL_PMUC_WKUP_WDT1);
 
+	/* LL gap: HPSYS_CFG SYSCR WDT reboot routing has no LL helper. */
 	if (config->reset_all) {
 		sys_set_bit(config->cfg + HPSYS_CFG_SYSCR, HPSYS_CFG_SYSCR_WDT1_REBOOT_Pos);
 	} else {

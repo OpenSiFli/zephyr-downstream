@@ -12,6 +12,7 @@ if(CONFIG_HAS_SIFLI_HAL)
   zephyr_include_directories(${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis/Include)
   if(CONFIG_SOC_SERIES_SF32LB52X)
     zephyr_include_directories(${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis/sf32lb52x)
+    zephyr_include_directories(${ZEPHYR_HAL_SIFLI_MODULE_DIR}/ll/sf32lb52x)
   endif()
   zephyr_include_directories_ifdef(
     CONFIG_BT_SF32LB

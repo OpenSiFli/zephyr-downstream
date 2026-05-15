@@ -11,7 +11,10 @@
 #include <zephyr/dt-bindings/pinctrl/sf32lb52x-pinctrl.h>
 #include <zephyr/drivers/clock_control/sf32lb.h>
 #include <zephyr/drivers/pinctrl.h>
+#include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
+
+#include <ll_pinmux.h>
 
 struct sf32lb52x_pinctrl_config {
 	uintptr_t pad_sa;
@@ -37,15 +40,16 @@ static int pinctrl_configure_pin(pinctrl_soc_pin_t pin)
 {
 	const struct device *dev = DEVICE_DT_INST_GET(0);
 	const struct sf32lb52x_pinctrl_config *config = dev->config;
-	uintptr_t pad;
+	HPSYS_PINMUX_TypeDef *pinmux;
 	uint8_t pinr_offset;
-	uint32_t val;
 	uint8_t port = FIELD_GET(SF32LB_PORT_MSK, pin);
 	uint8_t pad_num = FIELD_GET(SF32LB_PAD_MSK, pin);
 	uint8_t ds_idx = FIELD_GET(SF32LB_DS_IDX_MSK, pin);
-	uint32_t cfg_msk = SF32LB_PINMUX_CFG_MSK;
 	bool pa39_42 = pinctrl_sf32lb52x_is_pa39_42(port, pad_num);
 	uint8_t ds_reg;
+	uint32_t drive;
+	uint32_t pull;
+	uint32_t slew;
 
 	/*
 	 * PA39-PA42 only have DS1 bit (no DS0), supports only 4mA (DS1=0) or 20mA (DS1=1).
@@ -77,7 +81,9 @@ static int pinctrl_configure_pin(pinctrl_soc_pin_t pin)
 	pinr_offset = FIELD_GET(SF32LB_PINR_OFFSET_MSK, pin);
 	if (pinr_offset != 0U) {
 		uint32_t pinr_msk;
+		uint32_t val;
 
+		/* LL gap: dynamic per-field PINR updates are not covered by ll_hpsys_cfg.h. */
 		pinr_msk = 0xFFU << (8U * FIELD_GET(SF32LB_PINR_FIELD_MSK, pin));
 		val = sys_read32(config->cfg + pinr_offset);
 		val &= ~pinr_msk;
@@ -88,32 +94,43 @@ static int pinctrl_configure_pin(pinctrl_soc_pin_t pin)
 	/* configure HPSYS_PINMUX */
 	switch (FIELD_GET(SF32LB_PORT_MSK, pin)) {
 	case SF32LB_PORT_SA:
-		pad = config->pad_sa;
+		pinmux = (HPSYS_PINMUX_TypeDef *)config->pad_sa;
 		break;
 	case SF32LB_PORT_PA:
-		pad = config->pad_pa;
+		pinmux = (HPSYS_PINMUX_TypeDef *)config->pad_pa;
 		break;
 	default:
 		return -EINVAL;
 	}
 
-	pad += FIELD_GET(SF32LB_PAD_MSK, pin) * 4U;
-
-	val = sys_read32(pad);
 	if (pa39_42) {
-		cfg_msk &= ~SF32LB_SR_MSK;
+		slew = 0U;
+	} else {
+		slew = pin & SF32LB_SR_MSK;
 	}
-	val &= ~cfg_msk;
-	val |= (pin & (cfg_msk & ~SF32LB_DS_MSK));
-	val |= FIELD_PREP(SF32LB_DS_MSK, ds_reg);
+	pull = pin & (SF32LB_PE_MSK | SF32LB_PS_MSK);
+	drive = FIELD_PREP(SF32LB_DS_MSK, ds_reg);
+
+	ll_pinmux_set_fsel(pinmux, pad_num, FIELD_GET(SF32LB_FSEL_MSK, pin));
+	ll_pinmux_config_pull(pinmux, pad_num, pull);
+	if ((pin & SF32LB_IE_MSK) != 0U) {
+		ll_pinmux_enable_input(pinmux, pad_num);
+	} else {
+		ll_pinmux_disable_input(pinmux, pad_num);
+	}
+	ll_pinmux_config_drive(pinmux, pad_num, drive);
 	if (pa39_42) {
-		val &= ~SF32LB_SR_MSK;
 		if (pinctrl_sf32lb52x_uses_i2c_mode(pin)) {
-			val |= SF32LB_SR_MSK;
+			/* LL gap: PA39-PA42 use this bit as MODE rather than generic slew. */
+			sys_set_bits((mem_addr_t)ll_pinmux_get_pad_reg(pinmux, pad_num),
+				     SF32LB_SR_MSK);
+		} else {
+			sys_clear_bits((mem_addr_t)ll_pinmux_get_pad_reg(pinmux, pad_num),
+				       SF32LB_SR_MSK);
 		}
+	} else {
+		ll_pinmux_set_slew_rate(pinmux, pad_num, slew);
 	}
-
-	sys_write32(val, pad);
 
 	return 0;
 }

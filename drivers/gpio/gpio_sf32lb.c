@@ -13,35 +13,13 @@
 #include <zephyr/drivers/clock_control/sf32lb.h>
 #include <zephyr/irq.h>
 #include <zephyr/sys/math_extras.h>
+#include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
 
-#include <register.h>
+#include <ll_gpio.h>
+#include <ll_pinmux.h>
 
-#define GPIO1_DIRX   offsetof(GPIO1_TypeDef, DIR0)
-#define GPIO1_DORX   offsetof(GPIO1_TypeDef, DOR0)
-#define GPIO1_DOSRX  offsetof(GPIO1_TypeDef, DOSR0)
-#define GPIO1_DOCRX  offsetof(GPIO1_TypeDef, DOCR0)
-#define GPIO1_DOERX  offsetof(GPIO1_TypeDef, DOER0)
-#define GPIO1_DOESRX offsetof(GPIO1_TypeDef, DOESR0)
-#define GPIO1_DOECRX offsetof(GPIO1_TypeDef, DOECR0)
-#define GPIO1_IESRX  offsetof(GPIO1_TypeDef, IESR0)
-#define GPIO1_IECRX  offsetof(GPIO1_TypeDef, IECR0)
-#define GPIO1_ISRX   offsetof(GPIO1_TypeDef, ISR0)
-#define GPIO1_ITSRX  offsetof(GPIO1_TypeDef, ITSR0)
-#define GPIO1_ITCRX  offsetof(GPIO1_TypeDef, ITCR0)
-#define GPIO1_IPHCRX offsetof(GPIO1_TypeDef, IPHCR0)
-#define GPIO1_IPLCRX offsetof(GPIO1_TypeDef, IPLCR0)
-#define GPIO1_IPHSRX offsetof(GPIO1_TypeDef, IPHSR0)
-#define GPIO1_IPLSRX offsetof(GPIO1_TypeDef, IPLSR0)
-
-#define PINMUX_PAD_XXYY_FSEL_MSK GENMASK(3, 0)
-#define PINMUX_PAD_XXYY_PE       BIT(4)
-#define PINMUX_PAD_XXYY_PS_PUP   BIT(5)
-#define PINMUX_PAD_XXYY_IE       BIT(6)
 #define PINMUX_PAD_XXYY_MODE_I2C BIT(8)
-#define PINMUX_PAD_XXYY_CFG_MSK                                                              \
-	(PINMUX_PAD_XXYY_FSEL_MSK | PINMUX_PAD_XXYY_PE | PINMUX_PAD_XXYY_PS_PUP |           \
-	 PINMUX_PAD_XXYY_IE)
 
 struct gpio_sf32lb_config {
 	struct gpio_driver_config common;
@@ -78,19 +56,20 @@ static void gpio_sf32lb_irq(const void *arg)
 	for (size_t c = 0U; c < ARRAY_SIZE(controllers); c++) {
 		const struct gpio_sf32lb_config *config = controllers[c]->config;
 		struct gpio_sf32lb_data *data = controllers[c]->data;
+		ll_gpio_bank_t *bank = (ll_gpio_bank_t *)config->gpio;
 		uint8_t min, max;
 		uint32_t val;
 
 		min = u32_count_trailing_zeros(config->common.port_pin_mask);
 		max = 32 - u32_count_leading_zeros(config->common.port_pin_mask);
 
-		val = sys_read32(config->gpio + GPIO1_ISRX);
+		val = ll_gpio_bank_get_irq_pending(bank);
 		for (uint8_t i = min; i < max; i++) {
 			if ((val & BIT(i)) != 0U) {
 				gpio_fire_callbacks(&data->callbacks, controllers[c], BIT(i));
 			}
 		}
-		sys_write32(val, config->gpio + GPIO1_ISRX);
+		ll_gpio_bank_clear_irq_pending(bank, val);
 	}
 }
 
@@ -99,13 +78,15 @@ static inline int gpio_sf32lb_configure(const struct device *port, gpio_pin_t pi
 {
 	const struct gpio_sf32lb_config *config = port->config;
 	struct gpio_sf32lb_data *data = port->data;
+	ll_gpio_bank_t *bank = (ll_gpio_bank_t *)config->gpio;
+	HPSYS_PINMUX_TypeDef *pinmux = (HPSYS_PINMUX_TypeDef *)config->pinmux;
 	bool has_mode_bit = gpio_sf32lb_pad_has_mode_bit(config, pin);
-	uintptr_t pad = config->pinmux + (pin * 4U);
-	uint32_t val;
+	uint32_t pin_mask = BIT(pin);
+	uint32_t pull = LL_PINMUX_PULL_NONE;
 
 	if ((flags & GPIO_OUTPUT) != 0U) {
 		/* disable ISR */
-		sys_write32(BIT(pin), config->gpio + GPIO1_IECRX);
+		ll_gpio_bank_disable_irq(bank, pin_mask);
 
 		if ((flags & GPIO_SINGLE_ENDED) != 0U) {
 			if ((flags & GPIO_LINE_OPEN_DRAIN) == 0U) {
@@ -115,54 +96,57 @@ static inline int gpio_sf32lb_configure(const struct device *port, gpio_pin_t pi
 			data->od |= BIT(pin);
 
 			/* disable O */
-			sys_write32(BIT(pin), config->gpio + GPIO1_DOCRX);
+			ll_gpio_bank_set_low(bank, pin_mask);
 
 			/* set initial state (OE) */
 			if ((flags & GPIO_OUTPUT_INIT_HIGH) != 0U) {
-				sys_write32(BIT(pin), config->gpio + GPIO1_DOESRX);
+				ll_gpio_bank_enable_output(bank, pin_mask);
 			} else if ((flags & GPIO_OUTPUT_INIT_LOW) != 0U) {
-				sys_write32(BIT(pin), config->gpio + GPIO1_DOECRX);
+				ll_gpio_bank_disable_output(bank, pin_mask);
 			}
 		} else {
 			data->od &= ~BIT(pin);
 
 			/* enable OE */
-			sys_write32(BIT(pin), config->gpio + GPIO1_DOESRX);
+			ll_gpio_bank_enable_output(bank, pin_mask);
 
 			/* set initial state (O) */
 			if ((flags & GPIO_OUTPUT_INIT_HIGH) != 0U) {
-				sys_write32(BIT(pin), config->gpio + GPIO1_DOSRX);
+				ll_gpio_bank_set_high(bank, pin_mask);
 			} else if ((flags & GPIO_OUTPUT_INIT_LOW) != 0U) {
-				sys_write32(BIT(pin), config->gpio + GPIO1_DOCRX);
+				ll_gpio_bank_set_low(bank, pin_mask);
 			}
 		}
 	} else if ((flags & GPIO_INPUT) != 0U) {
 		data->od &= ~BIT(pin);
 
 		/* disable OE */
-		sys_write32(BIT(pin), config->gpio + GPIO1_DOECRX);
+		ll_gpio_bank_disable_output(bank, pin_mask);
 	} else {
 		return -ENOTSUP;
 	}
 
 	/* configure pad settings in PINMUX */
-	val = sys_read32(pad);
-	val &= ~PINMUX_PAD_XXYY_CFG_MSK;
+	ll_pinmux_set_fsel(pinmux, pin, 0U);
 	if (has_mode_bit) {
-		val &= ~PINMUX_PAD_XXYY_MODE_I2C;
+		/* LL gap: PA39-PA42 reuse this bit as I2C mode, not generic slew. */
+		sys_clear_bits((mem_addr_t)ll_pinmux_get_pad_reg(pinmux, pin),
+			       PINMUX_PAD_XXYY_MODE_I2C);
 	}
 
 	if ((flags & GPIO_INPUT) != 0U) {
-		val |= PINMUX_PAD_XXYY_IE;
+		ll_pinmux_enable_input(pinmux, pin);
+	} else {
+		ll_pinmux_disable_input(pinmux, pin);
 	}
 
 	if ((flags & GPIO_PULL_UP) != 0U) {
-		val |= PINMUX_PAD_XXYY_PE | PINMUX_PAD_XXYY_PS_PUP;
+		pull = LL_PINMUX_PULL_UP;
 	} else if ((flags & GPIO_PULL_DOWN) != 0U) {
-		val |= PINMUX_PAD_XXYY_PE;
+		pull = LL_PINMUX_PULL_DOWN;
 	}
 
-	sys_write32(val, pad);
+	ll_pinmux_config_pull(pinmux, pin, pull);
 
 	return 0;
 }
@@ -170,8 +154,9 @@ static inline int gpio_sf32lb_configure(const struct device *port, gpio_pin_t pi
 static int gpio_sf32lb_port_get_raw(const struct device *port, uint32_t *value)
 {
 	const struct gpio_sf32lb_config *config = port->config;
+	ll_gpio_bank_t *bank = (ll_gpio_bank_t *)config->gpio;
 
-	*value = sys_read32(config->gpio + GPIO1_DIRX);
+	*value = ll_gpio_bank_read_input_port(bank);
 
 	return 0;
 }
@@ -181,21 +166,19 @@ static int gpio_sf32lb_port_set_masked_raw(const struct device *port, gpio_port_
 {
 	const struct gpio_sf32lb_config *config = port->config;
 	struct gpio_sf32lb_data *data = port->data;
+	ll_gpio_bank_t *bank = (ll_gpio_bank_t *)config->gpio;
 	gpio_port_pins_t pp_mask, od_mask;
-	uint32_t val;
 
 	pp_mask = mask & ~data->od;
 	if (pp_mask != 0U) {
-		val = sys_read32(config->gpio + GPIO1_DORX);
-		val = (val & ~pp_mask) | (value & pp_mask);
-		sys_write32(val, config->gpio + GPIO1_DORX);
+		ll_gpio_bank_set_high(bank, value & pp_mask);
+		ll_gpio_bank_set_low(bank, (~value) & pp_mask);
 	}
 
 	od_mask = mask & data->od;
 	if (od_mask != 0U) {
-		val = sys_read32(config->gpio + GPIO1_DOERX);
-		val = (val & ~od_mask) | (value & od_mask);
-		sys_write32(val, config->gpio + GPIO1_DOERX);
+		ll_gpio_bank_enable_output(bank, value & od_mask);
+		ll_gpio_bank_disable_output(bank, (~value) & od_mask);
 	}
 
 	return 0;
@@ -205,13 +188,14 @@ static int gpio_sf32lb_port_set_bits_raw(const struct device *port, gpio_port_pi
 {
 	const struct gpio_sf32lb_config *config = port->config;
 	struct gpio_sf32lb_data *data = port->data;
+	ll_gpio_bank_t *bank = (ll_gpio_bank_t *)config->gpio;
 	gpio_port_pins_t pp_pins, od_pins;
 
 	pp_pins = pins & ~data->od;
-	sys_write32(pp_pins, config->gpio + GPIO1_DOSRX);
+	ll_gpio_bank_set_high(bank, pp_pins);
 
 	od_pins = pins & data->od;
-	sys_write32(od_pins, config->gpio + GPIO1_DOESRX);
+	ll_gpio_bank_enable_output(bank, od_pins);
 
 	return 0;
 }
@@ -220,13 +204,14 @@ static int gpio_sf32lb_port_clear_bits_raw(const struct device *port, gpio_port_
 {
 	const struct gpio_sf32lb_config *config = port->config;
 	struct gpio_sf32lb_data *data = port->data;
+	ll_gpio_bank_t *bank = (ll_gpio_bank_t *)config->gpio;
 	gpio_port_pins_t pp_pins, od_pins;
 
 	pp_pins = pins & ~data->od;
-	sys_write32(pp_pins, config->gpio + GPIO1_DOCRX);
+	ll_gpio_bank_set_low(bank, pp_pins);
 
 	od_pins = pins & data->od;
-	sys_write32(od_pins, config->gpio + GPIO1_DOECRX);
+	ll_gpio_bank_disable_output(bank, od_pins);
 
 	return 0;
 }
@@ -235,21 +220,20 @@ static int gpio_sf32lb_port_toggle_bits(const struct device *port, gpio_port_pin
 {
 	const struct gpio_sf32lb_config *config = port->config;
 	struct gpio_sf32lb_data *data = port->data;
+	ll_gpio_bank_t *bank = (ll_gpio_bank_t *)config->gpio;
 	gpio_port_pins_t pp_pins, od_pins;
 	uint32_t val;
 
 	pp_pins = pins & ~data->od;
 	if (pp_pins != 0U) {
-		val = sys_read32(config->gpio + GPIO1_DORX);
-		val ^= pp_pins;
-		sys_write32(val, config->gpio + GPIO1_DORX);
+		ll_gpio_bank_toggle(bank, pp_pins);
 	}
 
 	od_pins = pins & data->od;
 	if (od_pins != 0U) {
-		val = sys_read32(config->gpio + GPIO1_DOERX);
-		val ^= od_pins;
-		sys_write32(val, config->gpio + GPIO1_DOERX);
+		val = ll_gpio_bank_is_output_enabled(bank, od_pins);
+		ll_gpio_bank_enable_output(bank, (~val) & od_pins);
+		ll_gpio_bank_disable_output(bank, val & od_pins);
 	}
 
 	return 0;
@@ -259,34 +243,35 @@ static int gpio_sf32lb_pin_interrupt_configure(const struct device *port, gpio_p
 					       enum gpio_int_mode mode, enum gpio_int_trig trig)
 {
 	const struct gpio_sf32lb_config *config = port->config;
+	ll_gpio_bank_t *bank = (ll_gpio_bank_t *)config->gpio;
+	ll_gpio_irq_config_t irq_config;
+	uint32_t pin_mask = BIT(pin);
 
 	if (mode == GPIO_INT_MODE_DISABLED) {
-		sys_write32(BIT(pin), config->gpio + GPIO1_IECRX);
+		ll_gpio_bank_disable_irq(bank, pin_mask);
 	} else if ((mode == GPIO_INT_MODE_EDGE) || (mode == GPIO_INT_MODE_LEVEL)) {
 		if (mode == GPIO_INT_MODE_EDGE) {
-			sys_write32(BIT(pin), config->gpio + GPIO1_ITSRX);
+			irq_config.type = LL_GPIO_IRQ_TYPE_EDGE;
 		} else {
-			sys_write32(BIT(pin), config->gpio + GPIO1_ITCRX);
+			irq_config.type = LL_GPIO_IRQ_TYPE_LEVEL;
 		}
 
 		switch (trig) {
 		case GPIO_INT_TRIG_LOW:
-			sys_write32(BIT(pin), config->gpio + GPIO1_IPHCRX);
-			sys_write32(BIT(pin), config->gpio + GPIO1_IPLSRX);
+			irq_config.polarity = LL_GPIO_IRQ_POL_LOW;
 			break;
 		case GPIO_INT_TRIG_HIGH:
-			sys_write32(BIT(pin), config->gpio + GPIO1_IPHSRX);
-			sys_write32(BIT(pin), config->gpio + GPIO1_IPLCRX);
+			irq_config.polarity = LL_GPIO_IRQ_POL_HIGH;
 			break;
 		case GPIO_INT_TRIG_BOTH:
-			sys_write32(BIT(pin), config->gpio + GPIO1_IPHSRX);
-			sys_write32(BIT(pin), config->gpio + GPIO1_IPLSRX);
+			irq_config.polarity = LL_GPIO_IRQ_POL_BOTH;
 			break;
 		default:
 			return -ENOTSUP;
 		}
 
-		sys_write32(BIT(pin), config->gpio + GPIO1_IESRX);
+		ll_gpio_bank_config_irq_trigger(bank, pin_mask, &irq_config);
+		ll_gpio_bank_enable_irq(bank, pin_mask);
 	} else {
 		return -ENOTSUP;
 	}
