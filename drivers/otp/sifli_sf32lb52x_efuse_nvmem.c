@@ -60,3 +60,20 @@ int sf32lb52x_efuse_read_bank1_field(enum sf32lb52x_efuse_bank1_field field, uin
 	return sf32lb52x_efuse_bank1_extract(bank1, field, out);
 }
 
+int sf32lb52x_efuse_read_adc_calib(enum sf32lb52x_efuse_adc_calib_source source,
+				   struct sf32lb52x_efuse_adc_calib *out)
+{
+	uint8_t bank1[SF32LB52X_EFUSE_BANK1_SIZE];
+	int ret;
+
+	if (out == NULL) {
+		return -EINVAL;
+	}
+
+	ret = sf32lb52x_efuse_read_bank1(bank1);
+	if (ret < 0) {
+		return ret;
+	}
+
+	return sf32lb52x_efuse_decode_adc_calib(bank1, source, out);
+}
