@@ -6,6 +6,7 @@
 #ifndef ZEPHYR_INCLUDE_DRIVERS_OTP_SIFLI_SF32LB52X_EFUSE_H_
 #define ZEPHYR_INCLUDE_DRIVERS_OTP_SIFLI_SF32LB52X_EFUSE_H_
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -73,6 +74,24 @@ enum sf32lb52x_efuse_bank1_field {
 	SF32LB52X_EFUSE_BANK1_FIELD_COUNT,
 };
 
+enum sf32lb52x_efuse_adc_calib_source {
+	SF32LB52X_EFUSE_ADC_CALIB_AUTO = 0,
+	SF32LB52X_EFUSE_ADC_CALIB_DEFAULT,
+	SF32LB52X_EFUSE_ADC_CALIB_AVDD_1V8,
+};
+
+struct sf32lb52x_efuse_adc_calib {
+	enum sf32lb52x_efuse_adc_calib_source source;
+	uint16_t reg1;
+	uint16_t reg2;
+	uint16_t mv1;
+	uint16_t mv2;
+	uint16_t vbat_reg;
+	uint16_t vbat_mv;
+	uint8_t ldovref_flag;
+	uint8_t ldovref_sel;
+};
+
 /**
  * @brief Extract a Bank1 bitfield from the raw 32-byte Bank1 data.
  *
@@ -91,6 +110,34 @@ enum sf32lb52x_efuse_bank1_field {
  */
 int sf32lb52x_efuse_bank1_extract(const uint8_t bank1[SF32LB52X_EFUSE_BANK1_SIZE],
 				  enum sf32lb52x_efuse_bank1_field field, uint32_t *out);
+
+/**
+ * @brief Resolve an ADC calibration source selection.
+ *
+ * @param requested Requested source, possibly @c SF32LB52X_EFUSE_ADC_CALIB_AUTO.
+ * @param letter_series True when the chip revision is an SF32LB52X letter series revision.
+ * @param avdd_1v8 True when the board supplies ADC AVDD from 1.8 V.
+ *
+ * @return The concrete calibration source to decode.
+ */
+enum sf32lb52x_efuse_adc_calib_source sf32lb52x_efuse_resolve_adc_calib_source(
+	enum sf32lb52x_efuse_adc_calib_source requested, bool letter_series, bool avdd_1v8);
+
+/**
+ * @brief Decode SF32LB52X ADC factory calibration data from raw Bank1 data.
+ *
+ * @param bank1 Raw Bank1 data (32 bytes).
+ * @param source Concrete calibration source. @c SF32LB52X_EFUSE_ADC_CALIB_AUTO
+ *        is invalid here; resolve it first with @ref sf32lb52x_efuse_resolve_adc_calib_source.
+ * @param[out] out Decoded ADC calibration data.
+ *
+ * @retval 0 on success.
+ * @retval -EINVAL on invalid parameters.
+ * @retval -ENODATA when the selected factory ADC calibration fields are blank or invalid.
+ */
+int sf32lb52x_efuse_decode_adc_calib(const uint8_t bank1[SF32LB52X_EFUSE_BANK1_SIZE],
+				     enum sf32lb52x_efuse_adc_calib_source source,
+				     struct sf32lb52x_efuse_adc_calib *out);
 
 #if defined(CONFIG_SF32LB52X_EFUSE_NVMEM) || defined(__DOXYGEN__)
 /**
@@ -129,6 +176,19 @@ int sf32lb52x_efuse_read_bank1(uint8_t bank1[SF32LB52X_EFUSE_BANK1_SIZE]);
  * @retval <0 on errors.
  */
 int sf32lb52x_efuse_read_bank1_field(enum sf32lb52x_efuse_bank1_field field, uint32_t *out);
+
+/**
+ * @brief Read and decode SF32LB52X ADC factory calibration data using NVMEM.
+ *
+ * @param source Concrete calibration source. @c SF32LB52X_EFUSE_ADC_CALIB_AUTO
+ *        is invalid here; resolve it first with @ref sf32lb52x_efuse_resolve_adc_calib_source.
+ * @param[out] out Decoded ADC calibration data.
+ *
+ * @retval 0 on success.
+ * @retval <0 on errors.
+ */
+int sf32lb52x_efuse_read_adc_calib(enum sf32lb52x_efuse_adc_calib_source source,
+				   struct sf32lb52x_efuse_adc_calib *out);
 #endif /* CONFIG_SF32LB52X_EFUSE_NVMEM */
 
 #ifdef __cplusplus
@@ -136,4 +196,3 @@ int sf32lb52x_efuse_read_bank1_field(enum sf32lb52x_efuse_bank1_field field, uin
 #endif
 
 #endif /* ZEPHYR_INCLUDE_DRIVERS_OTP_SIFLI_SF32LB52X_EFUSE_H_ */
-

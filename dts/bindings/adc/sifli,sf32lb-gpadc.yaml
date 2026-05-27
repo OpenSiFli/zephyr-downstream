@@ -5,7 +5,7 @@ description: SiFli SF32LB ADC controller
 
 compatible: "sifli,sf32lb-gpadc"
 
-include: [adc-controller.yaml, pinctrl-device.yaml, sifli-sf32lb-cfg.yaml]
+include: [adc-controller.yaml, nvmem-consumer.yaml, pinctrl-device.yaml, sifli-sf32lb-cfg.yaml]
 
 properties:
   reg:
@@ -25,6 +25,36 @@ properties:
 
   sifli,cfg:
     required: true
+
+  sifli,calibration-source:
+    type: string
+    default: "auto"
+    enum:
+      - "auto"
+      - "default"
+      - "avdd-1v8"
+    description: |
+      Select which SF32LB52X eFuse ADC factory calibration group to use.
+      "default" uses the normal Bank1 ADC calibration fields. "avdd-1v8"
+      uses the second calibration group for letter-series chips whose ADC
+      AVDD is supplied at 1.8 V. "auto" selects "avdd-1v8" only when the
+      chip revision is letter-series and sifli,avdd-1v8 is present.
+
+  sifli,avdd-1v8:
+    type: boolean
+    description: |
+      Board-level indication that ADC AVDD is supplied at 1.8 V. This is
+      used only when sifli,calibration-source is "auto".
+
+  nvmem-cells:
+    description: |
+      Optional NVMEM cell containing the raw 32-byte SF32LB52X eFuse Bank1
+      calibration region.
+
+  nvmem-cell-names:
+    description: |
+      When nvmem-cells is present, it should contain a cell named
+      "calibration".
 
   "#io-channel-cells":
     const: 1

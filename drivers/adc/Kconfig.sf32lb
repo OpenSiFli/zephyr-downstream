@@ -5,5 +5,20 @@ config ADC_SF32LB
 	bool "ADC driver for SF32LB family of MCUs"
 	default y
 	depends on DT_HAS_SIFLI_SF32LB_GPADC_ENABLED
+	imply OTP if $(dt_compat_any_has_prop,$(DT_COMPAT_SIFLI_SF32LB_GPADC),nvmem-cells)
+	imply NVMEM if $(dt_compat_any_has_prop,$(DT_COMPAT_SIFLI_SF32LB_GPADC),nvmem-cells)
 	help
 	  Enable ADC driver for SF32LB series of MCUs
+
+if ADC_SF32LB
+
+config ADC_SF32LB_CALIBRATION
+	bool "Apply SF32LB ADC factory calibration"
+	default y
+	help
+	  Convert GPADC hardware codes through the SF32LB52X factory
+	  calibration model before returning Zephyr ADC raw samples.
+	  If no NVMEM calibration cell is available, SDK default calibration
+	  constants are used.
+
+endif # ADC_SF32LB
