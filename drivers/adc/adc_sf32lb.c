@@ -486,8 +486,20 @@ static int adc_sf32lb_init(const struct device *dev)
 		.op_mode = LL_GPADC_OP_MODE_SINGLE,
 		.init_time = 8U,
 	};
+	/*
+	 * Timing basis for ADC_CTRL_REG2 fields:
+	 * - PCLK is 120 MHz on this platform.
+	 * - Factory ADC calibration is done around 240 kHz ADCCLK.
+	 * - Datasheet formula:
+	 *   fADCCLK = fPCLK / (DATA_SAMP_DLY + CONV_WIDTH + SAMP_WIDTH + 2)
+	 * - With DATA_SAMP_DLY=2, CONV_WIDTH=251, SAMP_WIDTH=238:
+	 *   fADCCLK = 120000000 / (2 + 251 + 238 + 2) = 243407 Hz,
+	 *   which is close to the 240 kHz factory-calibration operating point.
+	 */
 	ll_gpadc_clock_config_t clock_config = {
 		.data_samp_dly = 2U,
+		.conv_width = 251U,
+		.samp_width = 238U,
 	};
 	ll_gpadc_trigger_config_t trigger_config = {
 		.timer_enable = 0U,
