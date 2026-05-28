@@ -43,6 +43,7 @@ LOG_MODULE_REGISTER(adc_sf32lb, CONFIG_ADC_LOG_LEVEL);
 #define ADC_SF32LB_DEFAULT_RATIO_UV      1068
 #define ADC_SF32LB_DEFAULT_VBAT_FACTOR_MILLI 2010
 #define ADC_SF32LB_VBAT_CHANNEL 7U
+#define ADC_SF32LB_ANAU_CMM_VALUE       0x10U
 
 #define SF32LB_ADC_WAIT_TIME_US 200
 
@@ -534,9 +535,19 @@ static int adc_sf32lb_init(const struct device *dev)
 	ll_gpadc_disable_core(gpadc);
 
 	/* enable ref ldo */
-	/* LL gap: use narrow register updates for SE and V18 instead of full analog reconfig. */
-	sys_set_bits((mem_addr_t)&gpadc->ADC_CFG_REG1,
-		     GPADC_ADC_CFG_REG1_ANAU_GPADC_SE | GPADC_ADC_CFG_REG1_ANAU_GPADC_EN_V18);
+	/*
+	 * LL gap: update only key ADC_CFG_REG1 fields instead of full analog reconfig.
+	 * - ANAU_GPADC_EN_V18 is only used when GPADC is powered by an external 1.8V supply,
+	 *   so it is intentionally not forced here.
+	 * - ANAU_GPADC_CMM affects conversion precision; set it explicitly to the validated value.
+	 */
+	uint32_t adc_cfg_reg1 = sys_read32((mem_addr_t)&gpadc->ADC_CFG_REG1);
+
+	adc_cfg_reg1 &= ~GPADC_ADC_CFG_REG1_ANAU_GPADC_CMM;
+	adc_cfg_reg1 |= GPADC_ADC_CFG_REG1_ANAU_GPADC_SE;
+	adc_cfg_reg1 |= (ADC_SF32LB_ANAU_CMM_VALUE << GPADC_ADC_CFG_REG1_ANAU_GPADC_CMM_Pos) &
+			GPADC_ADC_CFG_REG1_ANAU_GPADC_CMM;
+	sys_write32(adc_cfg_reg1, (mem_addr_t)&gpadc->ADC_CFG_REG1);
 	ll_gpadc_enable_ldoref(gpadc);
 	k_busy_wait(SF32LB_ADC_WAIT_TIME_US); /* wait for stable */
 	/* disable all slots */
