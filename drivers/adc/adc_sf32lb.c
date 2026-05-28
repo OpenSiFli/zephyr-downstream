@@ -27,6 +27,7 @@
 LOG_MODULE_REGISTER(adc_sf32lb, CONFIG_ADC_LOG_LEVEL);
 
 #define ADC_CONTEXT_USES_KERNEL_TIMER
+#define ADC_CONTEXT_ENABLE_ON_COMPLETE
 #include "adc_context.h"
 
 #define SYS_CFG_ANAU_CR offsetof(HPSYS_CFG_TypeDef, ANAU_CR)
@@ -286,6 +287,44 @@ static inline uint16_t adc_sf32lb_convert_sample(struct adc_sf32lb_data *data, u
 }
 #endif /* CONFIG_ADC_SF32LB_CALIBRATION */
 
+static void adc_sf32lb_disable_analog(const struct device *dev)
+{
+	const struct adc_sf32lb_config *config = dev->config;
+	GPADC_TypeDef *gpadc = (GPADC_TypeDef *)config->base;
+
+	/* Mute analog front-end when ADC is idle. */
+	sys_set_bits((mem_addr_t)&gpadc->ADC_CFG_REG1, GPADC_ADC_CFG_REG1_ANAU_GPADC_MUTE);
+	ll_gpadc_disable_core(gpadc);
+	ll_gpadc_disable_ldoref(gpadc);
+}
+
+static void adc_sf32lb_enable_analog(const struct device *dev)
+{
+	const struct adc_sf32lb_config *config = dev->config;
+	GPADC_TypeDef *gpadc = (GPADC_TypeDef *)config->base;
+
+	/* Unmute analog front-end before conversion. */
+	sys_clear_bits((mem_addr_t)&gpadc->ADC_CFG_REG1, GPADC_ADC_CFG_REG1_ANAU_GPADC_MUTE);
+
+	if (!ll_gpadc_is_enabled_ldoref(gpadc)) {
+		ll_gpadc_enable_ldoref(gpadc);
+		k_busy_wait(SF32LB_ADC_WAIT_TIME_US);
+	}
+
+	if (!ll_gpadc_is_enabled_core(gpadc)) {
+		ll_gpadc_enable_core(gpadc);
+		k_busy_wait(SF32LB_ADC_WAIT_TIME_US);
+	}
+}
+
+static void adc_context_on_complete(struct adc_context *ctx, int status)
+{
+	struct adc_sf32lb_data *data = CONTAINER_OF(ctx, struct adc_sf32lb_data, ctx);
+
+	ARG_UNUSED(status);
+	adc_sf32lb_disable_analog(data->dev);
+}
+
 static void adc_sf32lb_isr(const struct device *dev)
 {
 	const struct adc_sf32lb_config *config = dev->config;
@@ -414,10 +453,14 @@ static int start_read(const struct device *dev, const struct adc_sequence *seque
 	data->repeat_buffer = sequence->buffer;
 
 	adc_sf32lb_ensure_calibration(dev);
+	adc_sf32lb_enable_analog(dev);
 
 	adc_context_start_read(&data->ctx, sequence);
 
 	error = adc_context_wait_for_completion(&data->ctx);
+	if (error < 0) {
+		adc_sf32lb_disable_analog(dev);
+	}
 
 	return error;
 }
@@ -524,6 +567,9 @@ static int adc_sf32lb_init(const struct device *dev)
 		return ret;
 	}
 
+	/* Allow input path to settle after pinmux configuration. */
+	k_busy_wait(SF32LB_ADC_WAIT_TIME_US);
+
 	/* LL gap: HPSYS_CFG ANAU bandgap control is not covered by ll_gpadc.h. */
 	sys_set_bit(config->cfg_base + SYS_CFG_ANAU_CR, HPSYS_CFG_ANAU_CR_EN_BG_Pos);
 
@@ -532,9 +578,7 @@ static int adc_sf32lb_init(const struct device *dev)
 	ll_gpadc_config_trigger(gpadc, &trigger_config);
 	ll_gpadc_config_mode(gpadc, &mode_config);
 	ll_gpadc_config_clock(gpadc, &clock_config);
-	ll_gpadc_disable_core(gpadc);
 
-	/* enable ref ldo */
 	/*
 	 * LL gap: update only key ADC_CFG_REG1 fields instead of full analog reconfig.
 	 * - ANAU_GPADC_EN_V18 is only used when GPADC is powered by an external 1.8V supply,
@@ -548,8 +592,8 @@ static int adc_sf32lb_init(const struct device *dev)
 	adc_cfg_reg1 |= (ADC_SF32LB_ANAU_CMM_VALUE << GPADC_ADC_CFG_REG1_ANAU_GPADC_CMM_Pos) &
 			GPADC_ADC_CFG_REG1_ANAU_GPADC_CMM;
 	sys_write32(adc_cfg_reg1, (mem_addr_t)&gpadc->ADC_CFG_REG1);
-	ll_gpadc_enable_ldoref(gpadc);
-	k_busy_wait(SF32LB_ADC_WAIT_TIME_US); /* wait for stable */
+	adc_sf32lb_disable_analog(dev);
+
 	/* disable all slots */
 	for (uint8_t i = 0; i < 8U; i++) {
 		ll_gpadc_config_slot(gpadc, i, &slot_config);
