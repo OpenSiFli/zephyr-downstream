@@ -1,0 +1,41 @@
+/*
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* Test requires wire connection between:
+ *  - GPTIM2_CH1 PWM output at PA00 <-> GPIO input at PA01
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/ {
+	zephyr,user {
+		pwms = <&gptim2_pwm 0 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+		gpios = <&gpioa_00_31 1 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&pinctrl {
+	gptim2_pwm_default: gptim2_pwm_default {
+		group1 {
+			pinmux = <PA00_GPTIM2_CH1>;
+		};
+	};
+};
+
+&gptim2 {
+	status = "okay";
+	sifli,prescaler = <7>;
+
+	gptim2_pwm: pwm {
+		status = "okay";
+		pinctrl-0 = <&gptim2_pwm_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&gpioa_00_31 {
+	status = "okay";
+};
