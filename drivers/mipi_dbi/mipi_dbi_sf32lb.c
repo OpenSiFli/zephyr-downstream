@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2025, Qingsong Gou <gouqs@hotmail.com>
+ * Copyright (c) 2025 SiFli Technologies(Nanjing) Co., Ltd
  * SPDX-License-Identifier: Apache-2.0
  */
 #define DT_DRV_COMPAT sifli_sf32lb_lcdc_mipi_dbi
@@ -30,6 +31,14 @@ LOG_MODULE_REGISTER(mipi_dbi_sf32lb, CONFIG_MIPI_DBI_LOG_LEVEL);
 #define LCD_INTF_SEL_SPI       (1U)
 #define LCD_INTF_SEL_JDI       (4U)
 #define LCD_INTF_SEL_DBI_TYPEA (6U)
+
+#define SF32LB_QSPI_CMD_WRITE 0x02U
+#define SF32LB_QSPI_CMD_READ  0x03U
+#define SF32LB_QSPI_HEADER(op, cmd) (((uint32_t)(op) << 24) | ((uint32_t)(cmd) << 8))
+#define SF32LB_QSPI_READ_FREQUENCY_HZ 2000000U
+#define SF32LB_SINGLE_WR (LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE)
+#define SF32LB_SINGLE_WD (LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE)
+#define SF32LB_SINGLE_RD LCD_IF_LCD_SINGLE_RD_TRIG
 
 struct dbi_sf32lb_config {
 	uintptr_t base;
@@ -81,8 +90,7 @@ static void mipi_dbi_sf32lb_send_single_cmd(const struct device *dev, uint32_t a
 
 		sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
 		sys_write32(addr, config->base + LCD_WR);
-		sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE,
-			    config->base + LCD_SINGLE);
+		sys_write32(SF32LB_SINGLE_WR, config->base + LCD_SINGLE);
 	}
 }
 
@@ -91,6 +99,10 @@ static void mipi_dbi_sf32lb_recv_single_data(const struct device *dev, uint8_t *
 	const struct dbi_sf32lb_config *config = dev->config;
 	uint32_t spi_if_conf;
 	uint32_t data;
+
+	if (len == 0U) {
+		return;
+	}
 
 	wait_busy(dev);
 
@@ -102,24 +114,25 @@ static void mipi_dbi_sf32lb_recv_single_data(const struct device *dev, uint8_t *
 		       FIELD_PREP(LCD_IF_SPI_IF_CONF_SPI_RD_MODE_Msk, 1U);
 
 	sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
-	sys_write32(LCD_IF_LCD_SINGLE_RD_TRIG, config->base + LCD_SINGLE);
+	sys_write32(SF32LB_SINGLE_RD, config->base + LCD_SINGLE);
 
 	wait_busy(dev);
 
 	data = sys_read32(config->base + LCD_RD);
 
-	sys_put_le32(data, buf);
+	for (uint32_t i = 0U; i < len; i++) {
+		buf[i] = (uint8_t)(data >> (i * 8U));
+	}
 }
 
-static void mipi_dbi_sf32lb_type_c_read_bytes(const struct device *dev, uint32_t addr,
-					   uint32_t addr_len, uint8_t *buf, uint16_t len)
+static void mipi_dbi_sf32lb_qspi_read_bytes(const struct device *dev, uint32_t addr,
+					    uint32_t addr_len, uint8_t *buf, uint16_t len)
 {
 	wait_busy(dev);
 	mipi_dbi_sf32lb_spi_sequence(dev, false);
 	mipi_dbi_sf32lb_send_single_cmd(dev, addr, addr_len);
-
-	mipi_dbi_sf32lb_recv_single_data(dev, buf, len);
 	mipi_dbi_sf32lb_spi_sequence(dev, true);
+	mipi_dbi_sf32lb_recv_single_data(dev, buf, len);
 }
 
 static inline void wait_lcdc_single_busy(const struct device *dev)
@@ -131,7 +144,7 @@ static inline void wait_lcdc_single_busy(const struct device *dev)
 }
 
 static void mipi_dbi_sf32lb_write_bytes(const struct device *dev, uint32_t addr, uint16_t addr_len,
-					const uint8_t *buf, uint16_t len)
+					const uint8_t *buf, size_t len)
 {
 	const struct dbi_sf32lb_config *config = dev->config;
 	uint32_t spi_if_conf;
@@ -148,10 +161,10 @@ static void mipi_dbi_sf32lb_write_bytes(const struct device *dev, uint32_t addr,
 
 	sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
 	sys_write32(addr, config->base + LCD_WR);
-	sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE, config->base + LCD_SINGLE);
+	sys_write32(SF32LB_SINGLE_WR, config->base + LCD_SINGLE);
 
-	uint32_t data_len = len;
-	uint32_t total_len = len;
+	size_t data_len = len;
+	size_t total_len = len;
 
 	while (data_len > 0) {
 		uint32_t v, l;
@@ -174,9 +187,41 @@ static void mipi_dbi_sf32lb_write_bytes(const struct device *dev, uint32_t addr,
 
 		sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
 		sys_write32(v, config->base + LCD_WR);
-		sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE,
-			    config->base + LCD_SINGLE);
+		sys_write32(SF32LB_SINGLE_WD, config->base + LCD_SINGLE);
 	}
+}
+
+static int mipi_dbi_sf32lb_spi_set_frequency(const struct device *dev, uint32_t freq)
+{
+	const struct dbi_sf32lb_config *config = dev->config;
+	uint32_t clk_div;
+	uint32_t lcdc_clk;
+	uint32_t spi_if_conf;
+	int ret;
+
+	if (freq == 0U) {
+		return -EINVAL;
+	}
+
+	ret = sf32lb_clock_control_get_rate_dt(&config->clock, &lcdc_clk);
+	if (ret < 0) {
+		return ret;
+	}
+
+	clk_div = (lcdc_clk + (freq - 1U)) / freq;
+	if (clk_div < 2U) {
+		clk_div = 2U;
+	}
+	if (clk_div > (LCD_IF_SPI_IF_CONF_CLK_DIV_Msk >> LCD_IF_SPI_IF_CONF_CLK_DIV_Pos)) {
+		clk_div = LCD_IF_SPI_IF_CONF_CLK_DIV_Msk >> LCD_IF_SPI_IF_CONF_CLK_DIV_Pos;
+	}
+
+	spi_if_conf = sys_read32(config->base + LCD_SPI_IF_CONF);
+	spi_if_conf &= ~LCD_IF_SPI_IF_CONF_CLK_DIV_Msk;
+	spi_if_conf |= FIELD_PREP(LCD_IF_SPI_IF_CONF_CLK_DIV_Msk, clk_div);
+	sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
+
+	return 0;
 }
 
 static int mipi_dbi_sf32lb_freq_config(const struct device *dev,
@@ -229,27 +274,19 @@ static int mipi_dbi_sf32lb_spi_config(const struct device *dev,
 	const struct spi_config *spi_config = &dbi_config->config;
 	uint8_t bus_type = dbi_config->mode & 0xFU;
 	uint32_t spi_if_conf = 0;
-	uint32_t clk_div;
-	uint32_t lcdc_clk;
 	uint32_t freq = dbi_config->config.frequency;
-	int ret;
 
 	sys_clear_bits(config->base + LCD_SPI_IF_CONF, LCD_IF_SPI_IF_CONF_CLK_DIV);
-
-	ret = sf32lb_clock_control_get_rate_dt(&config->clock, &lcdc_clk);
-	if (ret < 0) {
-		return ret;
-	};
 
 	spi_if_conf = LCD_IF_SPI_IF_CONF_SPI_CS_AUTO_DIS | LCD_IF_SPI_IF_CONF_SPI_CLK_AUTO_DIS |
 		      LCD_IF_SPI_IF_CONF_SPI_CS_NO_IDLE;
 
-	if (bus_type == MIPI_DBI_MODE_SPI_4WIRE) {
+	if (bus_type == MIPI_DBI_MODE_QSPI) {
 		spi_if_conf |= LCD_IF_SPI_IF_CONF_4LINE_4_DATA_LINE;
 	} else if (bus_type == MIPI_DBI_MODE_SPI_3WIRE) {
 		spi_if_conf |= LCD_IF_SPI_IF_CONF_3LINE;
 	} else {
-		return -EINVAL;
+		return -ENOTSUP;
 	}
 
 	if (spi_config->operation & SPI_MODE_CPOL) {
@@ -262,18 +299,9 @@ static int mipi_dbi_sf32lb_spi_config(const struct device *dev,
 		spi_if_conf |= LCD_IF_SPI_IF_CONF_SPI_CLK_POL;
 	}
 
-	clk_div = (lcdc_clk + (freq - 1)) / freq;
-	if (clk_div < 2) { /* HW NOT support divider 1 */
-		clk_div = 2;
-	}
-	if (clk_div > 0xFF) {
-		clk_div = 0xFF;
-	}
-
-	spi_if_conf |= FIELD_PREP(LCD_IF_SPI_IF_CONF_CLK_DIV_Msk, clk_div);
 	sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
 
-	return 0;
+	return mipi_dbi_sf32lb_spi_set_frequency(dev, freq);
 }
 
 static int mipi_dbi_sf32lb_configure(const struct device *dev,
@@ -308,7 +336,7 @@ static int mipi_dbi_sf32lb_configure(const struct device *dev,
 		break;
 
 	case MIPI_DBI_MODE_SPI_3WIRE:
-	case MIPI_DBI_MODE_SPI_4WIRE:
+	case MIPI_DBI_MODE_QSPI:
 		lcd_conf |= FIELD_PREP(LCD_IF_LCD_CONF_LCD_INTF_SEL_Msk, LCD_INTF_SEL_SPI);
 		ret = mipi_dbi_sf32lb_spi_config(dev, dbi_config);
 		if (ret < 0) {
@@ -366,20 +394,24 @@ static int mipi_dbi_command_write_sf32lb(const struct device *dev,
 					 const struct mipi_dbi_config *dbi_config, uint8_t cmd,
 					 const uint8_t *data, size_t len)
 {
-	uint32_t addr;
 	uint8_t bus_type = dbi_config->mode & 0xFU;
+	uint32_t addr;
+	int ret;
 
-	mipi_dbi_sf32lb_configure(dev, dbi_config);
+	ret = mipi_dbi_sf32lb_configure(dev, dbi_config);
+	if (ret < 0) {
+		return ret;
+	}
 
 	switch (bus_type) {
 	case MIPI_DBI_MODE_8080_BUS_8_BIT:
 		return mipi_dbi_sf32lb_8080_cmd_write_bytes(dev, cmd, data, len);
-	case MIPI_DBI_MODE_SPI_3WIRE:
-	case MIPI_DBI_MODE_SPI_4WIRE:
+	case MIPI_DBI_MODE_QSPI:
+		addr = SF32LB_QSPI_HEADER(SF32LB_QSPI_CMD_WRITE, cmd);
 		mipi_dbi_sf32lb_write_bytes(dev, addr, sizeof(addr), data, len);
 		break;
 	default:
-		return -EINVAL;
+		return -ENOTSUP;
 	}
 
 	return 0;
@@ -417,20 +449,39 @@ static int mipi_dbi_command_read_sf32lb(const struct device *dev,
 					const struct mipi_dbi_config *dbi_config, uint8_t *cmds,
 					size_t num_cmds, uint8_t *response, size_t len)
 {
-	ARG_UNUSED(num_cmds);
 	uint32_t addr;
 	uint8_t bus_type = dbi_config->mode & 0xFU;
+	int ret;
+
+	ret = mipi_dbi_sf32lb_configure(dev, dbi_config);
+	if (ret < 0) {
+		return ret;
+	}
 
 	switch (bus_type) {
 	case MIPI_DBI_MODE_8080_BUS_8_BIT:
-		mipi_dbi_sf32lb_8080_cmd_read_bytes(dev, cmds, num_cmds, response, len);
-	case MIPI_DBI_MODE_SPI_3WIRE:
-	case MIPI_DBI_MODE_SPI_4WIRE:
-		mipi_dbi_sf32lb_configure(dev, dbi_config);
-		mipi_dbi_sf32lb_type_c_read_bytes(dev, addr, sizeof(addr), response, len);
+		return mipi_dbi_sf32lb_8080_cmd_read_bytes(dev, cmds, num_cmds, response, len);
+	case MIPI_DBI_MODE_QSPI:
+		if (num_cmds != 1U) {
+			return -ENOTSUP;
+		}
+		if (len > 4U) {
+			return -ENOTSUP;
+		}
+		addr = SF32LB_QSPI_HEADER(SF32LB_QSPI_CMD_READ, cmds[0]);
+		ret = mipi_dbi_sf32lb_spi_set_frequency(
+			dev, MIN(dbi_config->config.frequency, SF32LB_QSPI_READ_FREQUENCY_HZ));
+		if (ret < 0) {
+			return ret;
+		}
+		mipi_dbi_sf32lb_qspi_read_bytes(dev, addr, sizeof(addr), response, len);
+		ret = mipi_dbi_sf32lb_spi_set_frequency(dev, dbi_config->config.frequency);
+		if (ret < 0) {
+			return ret;
+		}
 		break;
 	default:
-		return -EINVAL;
+		return -ENOTSUP;
 	}
 
 	return 0;
@@ -443,13 +494,25 @@ static int mipi_dbi_write_display_sf32lb(const struct device *dev,
 					 enum display_pixel_format pixfmt)
 {
 	ARG_UNUSED(pixfmt);
-	const struct dbi_sf32lb_config *config = dev->config;
-	int data_len = desc->buf_size;
-	const uint8_t *buf = framebuf;
-	uint32_t spi_if_conf;
+	const struct dbi_sf32lb_config *config;
+	uint32_t data_len;
+	const uint8_t *buf;
 	uint8_t bus_type = dbi_config->mode & 0xFU;
 
-	if (data_len < 0) {
+	if (bus_type == MIPI_DBI_MODE_QSPI) {
+		/*
+		 * QSPI DCS writes need the command header and payload in one
+		 * transaction. Panel drivers should use command_write(cmd, data)
+		 * for this transport instead of a separate write_display() call.
+		 */
+		return -ENOTSUP;
+	}
+
+	config = dev->config;
+	data_len = desc->buf_size;
+	buf = framebuf;
+
+	if (data_len == 0U) {
 		return 0;
 	}
 
@@ -473,39 +536,10 @@ static int mipi_dbi_write_display_sf32lb(const struct device *dev,
 				buf++;
 				data_len--;
 			}
-		}
-	} else if (bus_type == MIPI_DBI_MODE_SPI_3WIRE || bus_type == MIPI_DBI_MODE_SPI_4WIRE) {
-		uint32_t total_len = data_len;
-
-		mipi_dbi_sf32lb_configure(dev, dbi_config);
-
-		while (data_len > 0) {
-			uint32_t v, l;
-
-			/* Convert 0xAA,0xBB,0xCC ->  0x00AABBCC */
-			for (v = 0, l = 0; (l < 4) && (data_len > 0); l++) {
-				v = (v << 8) | (*buf);
-				data_len--;
-				buf++;
 			}
-
-			wait_lcdc_single_busy(dev);
-
-			total_len -= l;
-			mipi_dbi_sf32lb_spi_sequence(dev, (0 == total_len));
-
-			spi_if_conf = sys_read32(config->base + LCD_SPI_IF_CONF);
-			spi_if_conf &= ~(LCD_IF_SPI_IF_CONF_WR_LEN_Msk);
-			spi_if_conf |= FIELD_PREP(LCD_IF_SPI_IF_CONF_WR_LEN_Msk, l - 1U);
-
-			sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
-			sys_write32(v, config->base + LCD_WR);
-			sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE,
-				    config->base + LCD_SINGLE);
+		} else {
+			return -ENOTSUP;
 		}
-	} else {
-		return -EINVAL;
-	}
 
 	return 0;
 }
