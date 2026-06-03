@@ -1,0 +1,29 @@
+/*
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	aliases {
+		pwm-test = &gptim2_pwm;
+	};
+};
+
+&pinctrl {
+	gptim2_pwm_default: gptim2_pwm_default {
+		group1 {
+			pinmux = <PA00_GPTIM2_CH1>;
+		};
+	};
+};
+
+&gptim2 {
+	status = "okay";
+	sifli,prescaler = <0>;
+
+	gptim2_pwm: pwm {
+		status = "okay";
+		pinctrl-0 = <&gptim2_pwm_default>;
+		pinctrl-names = "default";
+	};
+};
