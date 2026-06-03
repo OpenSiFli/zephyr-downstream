@@ -206,7 +206,7 @@ static void i2c_sf32lb_rx_helper(const struct device *dev, uint32_t sr)
 		ll_i2c_clear_flag_rf(i2c);
 
 		if (data->remaining > 0) {
-			if (IS_BIT_SET(sr, I2C_SR_NACK_Pos)) {
+			if (IS_BIT_SET(sr, I2C_SR_NACK_Pos) && data->remaining > 1) {
 				data->error = -EIO;
 				data->current_msg = NULL;
 				k_sem_give(&data->i2c_compl);
@@ -216,14 +216,16 @@ static void i2c_sf32lb_rx_helper(const struct device *dev, uint32_t sr)
 			data->buf_ptr++;
 			data->remaining--;
 
-			tcr = I2C_TCR_TB;
-			if (data->remaining == 0) {
-				if (i2c_is_stop_op(data->current_msg)) {
-					tcr |= I2C_TCR_STOP;
+			if (data->remaining > 0) {
+				tcr = I2C_TCR_TB;
+				if (data->remaining == 1) {
+					if (i2c_is_stop_op(data->current_msg)) {
+						tcr |= I2C_TCR_STOP;
+					}
+					tcr |= I2C_TCR_NACK;
 				}
-				tcr |= I2C_TCR_NACK;
+				i2c_sf32lb_write_tcr(i2c, tcr);
 			}
-			i2c_sf32lb_write_tcr(i2c, tcr);
 		}
 	}
 
@@ -289,13 +291,13 @@ static int i2c_sf32lb_send_addr(const struct device *dev, uint16_t addr, struct 
 		return -EIO;
 	}
 
-	i2c_sf32lb_clear_status(i2c, i2c_sf32lb_get_status(i2c));
-
 	if (ll_i2c_get_ack_status(i2c)) {
 		/* Wait for MSD(Master Stop Detected) to set, it appears slower than NACK */
 		WAIT_FOR(ll_i2c_is_active_flag_msd(i2c), SF32LB_I2C_TIMEOUT_MAX_US, NULL);
 		ret = -EIO;
 	}
+
+	i2c_sf32lb_clear_status(i2c, i2c_sf32lb_get_status(i2c));
 
 	if ((msg->len == 0) && i2c_is_stop_op(msg)) {
 		if (!WAIT_FOR(!ll_i2c_is_active_flag_ub(i2c), SF32LB_I2C_TIMEOUT_MAX_US,
@@ -369,7 +371,7 @@ static int i2c_sf32lb_dma_rx_config(const struct device *dev, struct i2c_msg *ms
 
 static int i2c_sf32lb_master_send_dma(const struct device *dev, uint16_t addr, struct i2c_msg *msg)
 {
-	int ret;
+	int ret = 0;
 	const struct i2c_sf32lb_config *config = dev->config;
 	struct i2c_sf32lb_data *data = dev->data;
 	I2C_TypeDef *i2c = i2c_sf32lb_regs(config);
@@ -625,6 +627,7 @@ static int i2c_sf32lb_master_recv(const struct device *dev, uint16_t addr, struc
 		}
 		tcr |= I2C_TCR_NACK;
 	}
+
 	i2c_sf32lb_write_tcr(i2c, tcr);
 
 	i2c_sf32lb_enable_msde(i2c);
@@ -726,10 +729,13 @@ static int i2c_sf32lb_transfer(const struct device *dev, struct i2c_msg *msgs, u
 
 	k_mutex_lock(&data->lock, K_FOREVER);
 
+	data->rw_flags = 0xFFU;
 	ll_i2c_enable(i2c);
 	i2c_sf32lb_enable_msde(i2c);
 
 	if (ll_i2c_is_active_flag_ub(i2c)) {
+		i2c_sf32lb_disable_msde(i2c);
+		ll_i2c_disable(i2c);
 		k_mutex_unlock(&data->lock);
 		LOG_ERR("Bus busy");
 		return -EBUSY;
@@ -762,13 +768,18 @@ static int i2c_sf32lb_transfer(const struct device *dev, struct i2c_msg *msgs, u
 		}
 	}
 
+	if (ret < 0) {
+		i2c_sf32lb_disable_all_irqs(i2c);
+		k_sem_reset(&data->i2c_compl);
+		i2c_sf32lb_clear_status(i2c, i2c_sf32lb_get_status(i2c));
+	}
 	ll_i2c_disable(i2c);
 
 	data->rw_flags = I2C_MSG_READ;
 
 	k_mutex_unlock(&data->lock);
 
-	return 0;
+	return ret;
 }
 
 static int i2c_sf32lb_recover_bus(const struct device *dev)
