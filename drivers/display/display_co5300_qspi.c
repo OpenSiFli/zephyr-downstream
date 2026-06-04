@@ -129,8 +129,7 @@ static int co5300_qspi_write(const struct device *dev, const uint16_t x, const u
 {
 	const struct co5300_qspi_config *config = dev->config;
 	struct co5300_qspi_data *data = dev->data;
-	const uint8_t *src = buf;
-	uint32_t row_len;
+	struct display_buffer_descriptor write_desc;
 	uint64_t min_buf_size;
 	int ret;
 
@@ -151,7 +150,6 @@ static int co5300_qspi_write(const struct device *dev, const uint16_t x, const u
 		return -EINVAL;
 	}
 
-	row_len = desc->width * CO5300_PIXEL_SIZE_RGB565;
 	min_buf_size =
 		(((uint64_t)desc->height - 1U) * desc->pitch + desc->width) *
 		CO5300_PIXEL_SIZE_RGB565;
@@ -159,31 +157,22 @@ static int co5300_qspi_write(const struct device *dev, const uint16_t x, const u
 		return -EINVAL;
 	}
 
-	if (desc->pitch == desc->width) {
-		ret = co5300_qspi_set_window(dev, x, y, x + desc->width - 1U,
-					     y + desc->height - 1U);
-		if (ret < 0) {
-			return ret;
-		}
-
-		return co5300_qspi_command_write(dev, MIPI_DCS_WRITE_MEMORY_START, src,
-						 row_len * desc->height);
+	ret = co5300_qspi_set_window(dev, x, y, x + desc->width - 1U,
+				     y + desc->height - 1U);
+	if (ret < 0) {
+		return ret;
 	}
 
-	for (uint16_t row = 0U; row < desc->height; row++) {
-		ret = co5300_qspi_set_window(dev, x, y + row, x + desc->width - 1U, y + row);
-		if (ret < 0) {
-			return ret;
-		}
-
-		ret = co5300_qspi_command_write(dev, MIPI_DCS_WRITE_MEMORY_START, src, row_len);
-		if (ret < 0) {
-			return ret;
-		}
-		src += desc->pitch * CO5300_PIXEL_SIZE_RGB565;
+	ret = co5300_qspi_command_write(dev, MIPI_DCS_WRITE_MEMORY_START, NULL, 0);
+	if (ret < 0) {
+		return ret;
 	}
 
-	return 0;
+	write_desc = *desc;
+	write_desc.buf_size = min_buf_size;
+
+	return mipi_dbi_write_display(config->mipi_dbi, &config->dbi_config, buf, &write_desc,
+				      data->pixel_format);
 }
 
 static int co5300_qspi_read(const struct device *dev, const uint16_t x, const uint16_t y,

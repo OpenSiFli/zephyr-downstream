@@ -6,6 +6,8 @@
 #define DT_DRV_COMPAT sifli_sf32lb_lcdc_mipi_dbi
 
 #include <zephyr/kernel.h>
+#include <zephyr/cache.h>
+#include <zephyr/display/mipi_display.h>
 #include <zephyr/drivers/clock_control/sf32lb.h>
 #include <zephyr/drivers/mipi_dbi.h>
 #include <zephyr/drivers/pinctrl.h>
@@ -16,7 +18,18 @@
 
 LOG_MODULE_REGISTER(mipi_dbi_sf32lb, CONFIG_MIPI_DBI_LOG_LEVEL);
 
+#define LCD_COMMAND     offsetof(LCD_IF_TypeDef, COMMAND)
+#define LCD_IRQ         offsetof(LCD_IF_TypeDef, IRQ)
 #define LCDC_SETTING    offsetof(LCD_IF_TypeDef, SETTING)
+#define LCD_CANVAS_TL_POS offsetof(LCD_IF_TypeDef, CANVAS_TL_POS)
+#define LCD_CANVAS_BR_POS offsetof(LCD_IF_TypeDef, CANVAS_BR_POS)
+#define LCD_CANVAS_BG   offsetof(LCD_IF_TypeDef, CANVAS_BG)
+#define LCD_LAYER0_CONFIG offsetof(LCD_IF_TypeDef, LAYER0_CONFIG)
+#define LCD_LAYER0_TL_POS offsetof(LCD_IF_TypeDef, LAYER0_TL_POS)
+#define LCD_LAYER0_BR_POS offsetof(LCD_IF_TypeDef, LAYER0_BR_POS)
+#define LCD_LAYER0_FILTER offsetof(LCD_IF_TypeDef, LAYER0_FILTER)
+#define LCD_LAYER0_SRC  offsetof(LCD_IF_TypeDef, LAYER0_SRC)
+#define LCD_LAYER0_FILL offsetof(LCD_IF_TypeDef, LAYER0_FILL)
 #define LCD_CONF        offsetof(LCD_IF_TypeDef, LCD_CONF)
 #define LCD_IF_CONF     offsetof(LCD_IF_TypeDef, LCD_IF_CONF)
 #define TE_CONF         offsetof(LCD_IF_TypeDef, TE_CONF)
@@ -34,8 +47,11 @@ LOG_MODULE_REGISTER(mipi_dbi_sf32lb, CONFIG_MIPI_DBI_LOG_LEVEL);
 
 #define SF32LB_QSPI_CMD_WRITE 0x02U
 #define SF32LB_QSPI_CMD_READ  0x03U
+#define SF32LB_QSPI_MEM_WRITE 0x32U
 #define SF32LB_QSPI_HEADER(op, cmd) (((uint32_t)(op) << 24) | ((uint32_t)(cmd) << 8))
 #define SF32LB_QSPI_READ_FREQUENCY_HZ 2000000U
+#define SF32LB_QSPI_LAYER_TIMEOUT_MS 1000U
+#define SF32LB_RGB565_BYTES_PER_PIXEL 2U
 #define SF32LB_SINGLE_WR (LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE)
 #define SF32LB_SINGLE_WD (LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE)
 #define SF32LB_SINGLE_RD LCD_IF_LCD_SINGLE_RD_TRIG
@@ -48,7 +64,45 @@ struct dbi_sf32lb_config {
 
 struct dbi_sf32lb_data {
 	const struct mipi_dbi_config *active_config;
+	uint32_t qspi_write_display_header;
+	uint16_t qspi_x0;
+	uint16_t qspi_y0;
+	uint16_t qspi_x1;
+	uint16_t qspi_y1;
+	bool qspi_write_display_header_valid;
+	bool qspi_column_valid;
+	bool qspi_page_valid;
 };
+
+static inline bool mipi_dbi_sf32lb_is_memory_write(uint8_t cmd)
+{
+	return cmd == MIPI_DCS_WRITE_MEMORY_START || cmd == MIPI_DCS_WRITE_MEMORY_CONTINUE;
+}
+
+static inline uint32_t mipi_dbi_sf32lb_bus_address(const void *ptr)
+{
+	uintptr_t addr = (uintptr_t)ptr;
+
+	return HCPU_MPI_SBUS_ADDR(addr);
+}
+
+static void mipi_dbi_sf32lb_track_qspi_window(struct dbi_sf32lb_data *driver_data,
+					      uint8_t cmd, const uint8_t *data, size_t len)
+{
+	if (data == NULL || len != 4U) {
+		return;
+	}
+
+	if (cmd == MIPI_DCS_SET_COLUMN_ADDRESS) {
+		driver_data->qspi_x0 = sys_get_be16(&data[0]);
+		driver_data->qspi_x1 = sys_get_be16(&data[2]);
+		driver_data->qspi_column_valid = true;
+	} else if (cmd == MIPI_DCS_SET_PAGE_ADDRESS) {
+		driver_data->qspi_y0 = sys_get_be16(&data[0]);
+		driver_data->qspi_y1 = sys_get_be16(&data[2]);
+		driver_data->qspi_page_valid = true;
+	}
+}
 
 static inline void wait_busy(const struct device *dev)
 {
@@ -224,6 +278,29 @@ static int mipi_dbi_sf32lb_spi_set_frequency(const struct device *dev, uint32_t 
 	return 0;
 }
 
+static int mipi_dbi_sf32lb_set_qspi_output_format(const struct device *dev,
+						  const struct mipi_dbi_config *dbi_config)
+{
+	const struct dbi_sf32lb_config *config = dev->config;
+	uint8_t color_coding = dbi_config->color_coding & 0xF0U;
+	uint32_t lcd_conf;
+
+	if (color_coding != MIPI_DBI_MODE_RGB565) {
+		return -ENOTSUP;
+	}
+
+	lcd_conf = sys_read32(config->base + LCD_CONF);
+	lcd_conf &= ~(LCD_IF_LCD_CONF_LCD_FORMAT_Msk | LCD_IF_LCD_CONF_AHB_FORMAT_Msk |
+		      LCD_IF_LCD_CONF_SPI_LCD_FORMAT_Msk | LCD_IF_LCD_CONF_DPI_LCD_FORMAT_Msk |
+		      LCD_IF_LCD_CONF_JDI_SER_FORMAT_Msk | LCD_IF_LCD_CONF_ENDIAN_Msk);
+	lcd_conf |= FIELD_PREP(LCD_IF_LCD_CONF_SPI_LCD_FORMAT_Msk, 1U) |
+		    FIELD_PREP(LCD_IF_LCD_CONF_DPI_LCD_FORMAT_Msk, 1U) |
+		    LCD_IF_LCD_CONF_LCD_FORMAT_RGB565;
+	sys_write32(lcd_conf, config->base + LCD_CONF);
+
+	return 0;
+}
+
 static int mipi_dbi_sf32lb_freq_config(const struct device *dev,
 				       const struct mipi_dbi_config *dbi_config)
 {
@@ -349,6 +426,12 @@ static int mipi_dbi_sf32lb_configure(const struct device *dev,
 	}
 
 	sys_write32(lcd_conf, config->base + LCD_CONF);
+	if (bus_type == MIPI_DBI_MODE_QSPI) {
+		ret = mipi_dbi_sf32lb_set_qspi_output_format(dev, dbi_config);
+		if (ret < 0) {
+			return ret;
+		}
+	}
 	data->active_config = dbi_config;
 
 	return 0;
@@ -394,7 +477,9 @@ static int mipi_dbi_command_write_sf32lb(const struct device *dev,
 					 const struct mipi_dbi_config *dbi_config, uint8_t cmd,
 					 const uint8_t *data, size_t len)
 {
+	struct dbi_sf32lb_data *driver_data = dev->data;
 	uint8_t bus_type = dbi_config->mode & 0xFU;
+	uint8_t qspi_op;
 	uint32_t addr;
 	int ret;
 
@@ -407,7 +492,22 @@ static int mipi_dbi_command_write_sf32lb(const struct device *dev,
 	case MIPI_DBI_MODE_8080_BUS_8_BIT:
 		return mipi_dbi_sf32lb_8080_cmd_write_bytes(dev, cmd, data, len);
 	case MIPI_DBI_MODE_QSPI:
-		addr = SF32LB_QSPI_HEADER(SF32LB_QSPI_CMD_WRITE, cmd);
+		mipi_dbi_sf32lb_track_qspi_window(driver_data, cmd, data, len);
+
+		if (mipi_dbi_sf32lb_is_memory_write(cmd)) {
+			qspi_op = SF32LB_QSPI_MEM_WRITE;
+		} else {
+			qspi_op = SF32LB_QSPI_CMD_WRITE;
+		}
+
+		addr = SF32LB_QSPI_HEADER(qspi_op, cmd);
+		if (mipi_dbi_sf32lb_is_memory_write(cmd) && len == 0U) {
+			driver_data->qspi_write_display_header = addr;
+			driver_data->qspi_write_display_header_valid = true;
+			return 0;
+		}
+
+		driver_data->qspi_write_display_header_valid = false;
 		mipi_dbi_sf32lb_write_bytes(dev, addr, sizeof(addr), data, len);
 		break;
 	default:
@@ -487,27 +587,191 @@ static int mipi_dbi_command_read_sf32lb(const struct device *dev,
 	return 0;
 }
 
+static int mipi_dbi_sf32lb_wait_eof(const struct device *dev)
+{
+	const struct dbi_sf32lb_config *config = dev->config;
+	uint32_t start_ms = k_uptime_get_32();
+
+	while ((sys_read32(config->base + LCD_IRQ) & LCD_IF_IRQ_EOF_RAW_STAT) == 0U) {
+		if ((k_uptime_get_32() - start_ms) > SF32LB_QSPI_LAYER_TIMEOUT_MS) {
+			return -ETIMEDOUT;
+		}
+	}
+
+	sys_write32(LCD_IF_IRQ_EOF_RAW_STAT, config->base + LCD_IRQ);
+
+	return 0;
+}
+
+static int mipi_dbi_sf32lb_program_rgb565_layer(const struct device *dev,
+						const uint8_t *framebuf,
+						const struct display_buffer_descriptor *desc,
+						uint16_t x0, uint16_t y0,
+						bool byte_swap)
+{
+	const struct dbi_sf32lb_config *config = dev->config;
+	uint64_t min_buf_size;
+	uint32_t layer_line_bytes;
+	uint32_t layer_config;
+	uint32_t canvas_bg;
+	uint32_t x1;
+	uint32_t y1;
+	uint32_t max_x = LCD_IF_LAYER0_BR_POS_X1_Msk >> LCD_IF_LAYER0_BR_POS_X1_Pos;
+	uint32_t max_y = LCD_IF_LAYER0_BR_POS_Y1_Msk >> LCD_IF_LAYER0_BR_POS_Y1_Pos;
+	uint32_t max_layer_width =
+		LCD_IF_LAYER0_CONFIG_WIDTH_Msk >> LCD_IF_LAYER0_CONFIG_WIDTH_Pos;
+
+	if (framebuf == NULL || desc == NULL) {
+		return -EINVAL;
+	}
+
+	if (desc->width == 0U || desc->height == 0U || desc->pitch < desc->width) {
+		return -EINVAL;
+	}
+
+	x1 = x0 + desc->width - 1U;
+	y1 = y0 + desc->height - 1U;
+	layer_line_bytes = desc->pitch * SF32LB_RGB565_BYTES_PER_PIXEL;
+	min_buf_size =
+		(((uint64_t)desc->height - 1U) * desc->pitch + desc->width) *
+		SF32LB_RGB565_BYTES_PER_PIXEL;
+
+	if (x1 > max_x || y1 > max_y || layer_line_bytes > max_layer_width ||
+	    min_buf_size > desc->buf_size) {
+		return -EINVAL;
+	}
+
+#if defined(CONFIG_CACHE_MANAGEMENT) && defined(CONFIG_DCACHE)
+	(void)sys_cache_data_flush_range((void *)framebuf, desc->buf_size);
+#endif
+
+	wait_busy(dev);
+
+	canvas_bg = sys_read32(config->base + LCD_CANVAS_BG);
+	canvas_bg &= ~(LCD_IF_CANVAS_BG_RED_Msk | LCD_IF_CANVAS_BG_GREEN_Msk |
+		       LCD_IF_CANVAS_BG_BLUE_Msk);
+	sys_write32(canvas_bg, config->base + LCD_CANVAS_BG);
+
+	sys_write32(FIELD_PREP(LCD_IF_CANVAS_TL_POS_X0_Msk, x0) |
+		    FIELD_PREP(LCD_IF_CANVAS_TL_POS_Y0_Msk, y0),
+		    config->base + LCD_CANVAS_TL_POS);
+	sys_write32(FIELD_PREP(LCD_IF_CANVAS_BR_POS_X1_Msk, x1) |
+		    FIELD_PREP(LCD_IF_CANVAS_BR_POS_Y1_Msk, y1),
+		    config->base + LCD_CANVAS_BR_POS);
+
+	layer_config = LCD_IF_LAYER0_CONFIG_FORMAT_RGB565 |
+		       FIELD_PREP(LCD_IF_LAYER0_CONFIG_ALPHA_Msk, 255U) |
+		       FIELD_PREP(LCD_IF_LAYER0_CONFIG_WIDTH_Msk, layer_line_bytes) |
+		       LCD_IF_LAYER0_CONFIG_PREFETCH_EN | LCD_IF_LAYER0_CONFIG_ACTIVE;
+
+	sys_write32(layer_config, config->base + LCD_LAYER0_CONFIG);
+	sys_write32(FIELD_PREP(LCD_IF_LAYER0_TL_POS_X0_Msk, x0) |
+		    FIELD_PREP(LCD_IF_LAYER0_TL_POS_Y0_Msk, y0),
+		    config->base + LCD_LAYER0_TL_POS);
+	sys_write32(FIELD_PREP(LCD_IF_LAYER0_BR_POS_X1_Msk, x1) |
+		    FIELD_PREP(LCD_IF_LAYER0_BR_POS_Y1_Msk, y1),
+		    config->base + LCD_LAYER0_BR_POS);
+	sys_write32(0U, config->base + LCD_LAYER0_FILTER);
+	sys_write32(mipi_dbi_sf32lb_bus_address(framebuf), config->base + LCD_LAYER0_SRC);
+	sys_write32(byte_swap ? LCD_IF_LAYER0_FILL_ENDIAN : 0U, config->base + LCD_LAYER0_FILL);
+
+	return 0;
+}
+
+static int mipi_dbi_sf32lb_qspi_send_layer(const struct device *dev, uint32_t addr,
+					   const uint8_t *framebuf,
+					   struct display_buffer_descriptor *desc,
+					   uint16_t x0, uint16_t y0, bool byte_swap)
+{
+	const struct dbi_sf32lb_config *config = dev->config;
+	int ret;
+
+	wait_busy(dev);
+	mipi_dbi_sf32lb_spi_sequence(dev, false);
+	mipi_dbi_sf32lb_send_single_cmd(dev, addr, sizeof(addr));
+	mipi_dbi_sf32lb_spi_sequence(dev, true);
+
+	ret = mipi_dbi_sf32lb_program_rgb565_layer(dev, framebuf, desc, x0, y0, byte_swap);
+	if (ret < 0) {
+		return ret;
+	}
+
+	sys_write32(LCD_IF_IRQ_EOF_RAW_STAT, config->base + LCD_IRQ);
+	sys_write32(LCD_IF_COMMAND_START, config->base + LCD_COMMAND);
+
+	return mipi_dbi_sf32lb_wait_eof(dev);
+}
+
+static int mipi_dbi_sf32lb_qspi_write_display(const struct device *dev,
+					      const uint8_t *framebuf,
+					      struct display_buffer_descriptor *desc,
+					      enum display_pixel_format pixfmt)
+{
+	struct dbi_sf32lb_data *data = dev->data;
+	uint32_t addr;
+	uint32_t window_width;
+	uint32_t window_height;
+	uint16_t x0 = 0U;
+	uint16_t y0 = 0U;
+	bool byte_swap;
+
+	if (pixfmt == PIXEL_FORMAT_RGB_565) {
+		byte_swap = false;
+	} else if (pixfmt == PIXEL_FORMAT_RGB_565X) {
+		byte_swap = true;
+	} else {
+		return -ENOTSUP;
+	}
+
+	addr = data->qspi_write_display_header_valid ?
+		data->qspi_write_display_header :
+		SF32LB_QSPI_HEADER(SF32LB_QSPI_MEM_WRITE, MIPI_DCS_WRITE_MEMORY_START);
+	data->qspi_write_display_header_valid = false;
+
+	if (data->qspi_column_valid && data->qspi_page_valid) {
+		if (data->qspi_x1 < data->qspi_x0 || data->qspi_y1 < data->qspi_y0) {
+			return -EINVAL;
+		}
+
+		window_width = data->qspi_x1 - data->qspi_x0 + 1U;
+		window_height = data->qspi_y1 - data->qspi_y0 + 1U;
+		if (window_width != desc->width || window_height != desc->height) {
+			return -EINVAL;
+		}
+
+		x0 = data->qspi_x0;
+		y0 = data->qspi_y0;
+	}
+
+	return mipi_dbi_sf32lb_qspi_send_layer(dev, addr, framebuf, desc, x0, y0, byte_swap);
+}
+
 static int mipi_dbi_write_display_sf32lb(const struct device *dev,
 					 const struct mipi_dbi_config *dbi_config,
 					 const uint8_t *framebuf,
 					 struct display_buffer_descriptor *desc,
 					 enum display_pixel_format pixfmt)
 {
-	ARG_UNUSED(pixfmt);
 	const struct dbi_sf32lb_config *config;
 	uint32_t data_len;
 	const uint8_t *buf;
 	uint8_t bus_type = dbi_config->mode & 0xFU;
+	int ret;
 
-	if (bus_type == MIPI_DBI_MODE_QSPI) {
-		/*
-		 * QSPI DCS writes need the command header and payload in one
-		 * transaction. Panel drivers should use command_write(cmd, data)
-		 * for this transport instead of a separate write_display() call.
-		 */
-		return -ENOTSUP;
+	if (framebuf == NULL || desc == NULL) {
+		return -EINVAL;
 	}
 
+	ret = mipi_dbi_sf32lb_configure(dev, dbi_config);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (bus_type == MIPI_DBI_MODE_QSPI) {
+		return mipi_dbi_sf32lb_qspi_write_display(dev, framebuf, desc, pixfmt);
+	}
+
+	ARG_UNUSED(pixfmt);
 	config = dev->config;
 	data_len = desc->buf_size;
 	buf = framebuf;
@@ -516,30 +780,31 @@ static int mipi_dbi_write_display_sf32lb(const struct device *dev,
 		return 0;
 	}
 
-	if (bus_type == MIPI_DBI_MODE_8080_BUS_16_BIT || bus_type == MIPI_DBI_MODE_8080_BUS_9_BIT ||
-	    bus_type == MIPI_DBI_MODE_8080_BUS_8_BIT) {
-		while (data_len > 0) {
-			wait_busy(dev);
+	if (bus_type != MIPI_DBI_MODE_8080_BUS_16_BIT &&
+	    bus_type != MIPI_DBI_MODE_8080_BUS_9_BIT &&
+	    bus_type != MIPI_DBI_MODE_8080_BUS_8_BIT) {
+		return -ENOTSUP;
+	}
 
-			if (bus_type == MIPI_DBI_MODE_8080_BUS_16_BIT && data_len >= 2) {
-				uint16_t v = sys_get_le16(buf);
+	while (data_len > 0) {
+		wait_busy(dev);
 
-				sys_write32(v, config->base + LCD_WR);
-				sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE,
-					    config->base + LCD_SINGLE);
-				buf += 2;
-				data_len -= 2;
-			} else {
-				sys_write32(*buf, config->base + LCD_WR);
-				sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE,
-					    config->base + LCD_SINGLE);
-				buf++;
-				data_len--;
-			}
-			}
+		if (bus_type == MIPI_DBI_MODE_8080_BUS_16_BIT && data_len >= 2) {
+			uint16_t v = sys_get_le16(buf);
+
+			sys_write32(v, config->base + LCD_WR);
+			sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE,
+				    config->base + LCD_SINGLE);
+			buf += 2;
+			data_len -= 2;
 		} else {
-			return -ENOTSUP;
+			sys_write32(*buf, config->base + LCD_WR);
+			sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE,
+				    config->base + LCD_SINGLE);
+			buf++;
+			data_len--;
 		}
+	}
 
 	return 0;
 }
@@ -549,21 +814,19 @@ static int mipi_dbi_configure_te_sf32lb(const struct device *dev, uint8_t edge, 
 	const struct dbi_sf32lb_config *config = dev->config;
 	uint32_t delay_us = k_ticks_to_us_ceil32(delay.ticks);
 	uint32_t te_conf;
-
-	te_conf = sys_read32(config->base + TE_CONF);
-
-	te_conf &= ~LCD_IF_TE_CONF_FMARK_MODE_Msk;
+	uint32_t polarity;
 
 	if (edge == MIPI_DBI_TE_RISING_EDGE) {
-		te_conf |= FIELD_PREP(LCD_IF_TE_CONF_FMARK_POL_Msk, 0);
+		polarity = 1U;
 	} else if (edge == MIPI_DBI_TE_FALLING_EDGE) {
-		te_conf |= FIELD_PREP(LCD_IF_TE_CONF_FMARK_POL_Msk, 1);
+		polarity = 0U;
 	} else {
 		return -EINVAL;
 	}
 
-	te_conf |= FIELD_PREP(LCD_IF_TE_CONF_FMARK_MODE_Msk, 1) |
-		   FIELD_PREP(LCD_IF_TE_CONF_ENABLE_Msk, 1);
+	te_conf = FIELD_PREP(LCD_IF_TE_CONF_ENABLE_Msk, 1) |
+		  FIELD_PREP(LCD_IF_TE_CONF_FMARK_POL_Msk, polarity) |
+		  FIELD_PREP(LCD_IF_TE_CONF_MODE_Msk, 0);
 
 	sys_write32(delay_us, config->base + TE_CONF2);
 	sys_write32(te_conf, config->base + TE_CONF);
