@@ -249,7 +249,7 @@ temp_sensor: &tsen {
 			avdd-enable-gpios = <&gpioa_32_44 5 GPIO_ACTIVE_HIGH>;
 			width = <390>;
 			height = <450>;
-			mipi-max-frequency = <20000000>;
+			mipi-max-frequency = <50000000>;
 			mipi-mode = "MIPI_DBI_MODE_QSPI";
 		};
 	};

@@ -11,6 +11,7 @@
 #include <zephyr/drivers/clock_control/sf32lb.h>
 #include <zephyr/drivers/mipi_dbi.h>
 #include <zephyr/drivers/pinctrl.h>
+#include <zephyr/irq.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
 
@@ -55,23 +56,31 @@ LOG_MODULE_REGISTER(mipi_dbi_sf32lb, CONFIG_MIPI_DBI_LOG_LEVEL);
 #define SF32LB_SINGLE_WR (LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE)
 #define SF32LB_SINGLE_WD (LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE)
 #define SF32LB_SINGLE_RD LCD_IF_LCD_SINGLE_RD_TRIG
+#define SF32LB_LCDC_TRANSFER_IRQS                                                                 \
+	(LCD_IF_IRQ_EOF_STAT | LCD_IF_IRQ_ICB_OF_STAT | LCD_IF_IRQ_EOF_RAW_STAT |               \
+	 LCD_IF_IRQ_ICB_OF_RAW_STAT)
 
 struct dbi_sf32lb_config {
 	uintptr_t base;
 	const struct pinctrl_dev_config *pincfg;
 	struct sf32lb_clock_dt_spec clock;
+	void (*irq_config_func)(const struct device *dev);
 };
 
 struct dbi_sf32lb_data {
+	struct k_mutex lock;
+	struct k_sem transfer_done;
 	const struct mipi_dbi_config *active_config;
 	uint32_t qspi_write_display_header;
 	uint16_t qspi_x0;
 	uint16_t qspi_y0;
 	uint16_t qspi_x1;
 	uint16_t qspi_y1;
+	int transfer_status;
 	bool qspi_write_display_header_valid;
 	bool qspi_column_valid;
 	bool qspi_page_valid;
+	bool transfer_pending;
 };
 
 static inline bool mipi_dbi_sf32lb_is_memory_write(uint8_t cmd)
@@ -101,6 +110,42 @@ static void mipi_dbi_sf32lb_track_qspi_window(struct dbi_sf32lb_data *driver_dat
 		driver_data->qspi_y0 = sys_get_be16(&data[0]);
 		driver_data->qspi_y1 = sys_get_be16(&data[2]);
 		driver_data->qspi_page_valid = true;
+	}
+}
+
+static void mipi_dbi_sf32lb_finish_transfer(const struct device *dev, int status)
+{
+	const struct dbi_sf32lb_config *config = dev->config;
+	struct dbi_sf32lb_data *data = dev->data;
+
+	sys_clear_bits(config->base + LCDC_SETTING, LCD_IF_SETTING_EOF_MASK);
+
+	if (!data->transfer_pending) {
+		return;
+	}
+
+	data->transfer_status = status;
+	data->transfer_pending = false;
+	k_sem_give(&data->transfer_done);
+}
+
+static void mipi_dbi_sf32lb_isr(const struct device *dev)
+{
+	const struct dbi_sf32lb_config *config = dev->config;
+	uint32_t irq;
+
+	irq = sys_read32(config->base + LCD_IRQ);
+	if (irq == 0U) {
+		return;
+	}
+
+	sys_write32(irq, config->base + LCD_IRQ);
+
+	if ((irq & (LCD_IF_IRQ_ICB_OF_STAT | LCD_IF_IRQ_ICB_OF_RAW_STAT)) != 0U) {
+		LOG_ERR("LCDC ICB overflow during display transfer");
+		mipi_dbi_sf32lb_finish_transfer(dev, -EIO);
+	} else if ((irq & (LCD_IF_IRQ_EOF_STAT | LCD_IF_IRQ_EOF_RAW_STAT)) != 0U) {
+		mipi_dbi_sf32lb_finish_transfer(dev, 0);
 	}
 }
 
@@ -440,11 +485,14 @@ static int mipi_dbi_sf32lb_configure(const struct device *dev,
 static int mipi_dbi_reset_sf32lb(const struct device *dev, k_timeout_t delay)
 {
 	const struct dbi_sf32lb_config *config = dev->config;
+	struct dbi_sf32lb_data *data = dev->data;
 	uint32_t delay_ms = k_ticks_to_ms_ceil32(delay.ticks);
 
+	k_mutex_lock(&data->lock, K_FOREVER);
 	sys_clear_bit(config->base + LCD_IF_CONF, LCD_IF_LCD_IF_CONF_LCD_RSTB_Pos);
 	k_msleep(delay_ms);
 	sys_set_bit(config->base + LCD_IF_CONF, LCD_IF_LCD_IF_CONF_LCD_RSTB_Pos);
+	k_mutex_unlock(&data->lock);
 
 	return 0;
 }
@@ -483,14 +531,17 @@ static int mipi_dbi_command_write_sf32lb(const struct device *dev,
 	uint32_t addr;
 	int ret;
 
+	k_mutex_lock(&driver_data->lock, K_FOREVER);
+
 	ret = mipi_dbi_sf32lb_configure(dev, dbi_config);
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	switch (bus_type) {
 	case MIPI_DBI_MODE_8080_BUS_8_BIT:
-		return mipi_dbi_sf32lb_8080_cmd_write_bytes(dev, cmd, data, len);
+		ret = mipi_dbi_sf32lb_8080_cmd_write_bytes(dev, cmd, data, len);
+		break;
 	case MIPI_DBI_MODE_QSPI:
 		mipi_dbi_sf32lb_track_qspi_window(driver_data, cmd, data, len);
 
@@ -504,17 +555,23 @@ static int mipi_dbi_command_write_sf32lb(const struct device *dev,
 		if (mipi_dbi_sf32lb_is_memory_write(cmd) && len == 0U) {
 			driver_data->qspi_write_display_header = addr;
 			driver_data->qspi_write_display_header_valid = true;
-			return 0;
+			ret = 0;
+			break;
 		}
 
 		driver_data->qspi_write_display_header_valid = false;
 		mipi_dbi_sf32lb_write_bytes(dev, addr, sizeof(addr), data, len);
+		ret = 0;
 		break;
 	default:
-		return -ENOTSUP;
+		ret = -ENOTSUP;
+		break;
 	}
 
-	return 0;
+out:
+	k_mutex_unlock(&driver_data->lock);
+
+	return ret;
 }
 
 static int mipi_dbi_sf32lb_8080_cmd_read_bytes(const struct device *dev, uint8_t *cmd,
@@ -549,58 +606,69 @@ static int mipi_dbi_command_read_sf32lb(const struct device *dev,
 					const struct mipi_dbi_config *dbi_config, uint8_t *cmds,
 					size_t num_cmds, uint8_t *response, size_t len)
 {
+	struct dbi_sf32lb_data *driver_data = dev->data;
 	uint32_t addr;
 	uint8_t bus_type = dbi_config->mode & 0xFU;
 	int ret;
 
+	k_mutex_lock(&driver_data->lock, K_FOREVER);
+
 	ret = mipi_dbi_sf32lb_configure(dev, dbi_config);
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	switch (bus_type) {
 	case MIPI_DBI_MODE_8080_BUS_8_BIT:
-		return mipi_dbi_sf32lb_8080_cmd_read_bytes(dev, cmds, num_cmds, response, len);
+		ret = mipi_dbi_sf32lb_8080_cmd_read_bytes(dev, cmds, num_cmds, response, len);
+		break;
 	case MIPI_DBI_MODE_QSPI:
 		if (num_cmds != 1U) {
-			return -ENOTSUP;
+			ret = -ENOTSUP;
+			break;
 		}
 		if (len > 4U) {
-			return -ENOTSUP;
+			ret = -ENOTSUP;
+			break;
 		}
 		addr = SF32LB_QSPI_HEADER(SF32LB_QSPI_CMD_READ, cmds[0]);
 		ret = mipi_dbi_sf32lb_spi_set_frequency(
 			dev, MIN(dbi_config->config.frequency, SF32LB_QSPI_READ_FREQUENCY_HZ));
 		if (ret < 0) {
-			return ret;
+			break;
 		}
 		mipi_dbi_sf32lb_qspi_read_bytes(dev, addr, sizeof(addr), response, len);
 		ret = mipi_dbi_sf32lb_spi_set_frequency(dev, dbi_config->config.frequency);
 		if (ret < 0) {
-			return ret;
+			break;
 		}
 		break;
 	default:
-		return -ENOTSUP;
+		ret = -ENOTSUP;
+		break;
 	}
 
-	return 0;
+out:
+	k_mutex_unlock(&driver_data->lock);
+
+	return ret;
 }
 
-static int mipi_dbi_sf32lb_wait_eof(const struct device *dev)
+static int mipi_dbi_sf32lb_wait_transfer_done(const struct device *dev)
 {
 	const struct dbi_sf32lb_config *config = dev->config;
-	uint32_t start_ms = k_uptime_get_32();
+	struct dbi_sf32lb_data *data = dev->data;
+	int ret;
 
-	while ((sys_read32(config->base + LCD_IRQ) & LCD_IF_IRQ_EOF_RAW_STAT) == 0U) {
-		if ((k_uptime_get_32() - start_ms) > SF32LB_QSPI_LAYER_TIMEOUT_MS) {
-			return -ETIMEDOUT;
-		}
+	ret = k_sem_take(&data->transfer_done, K_MSEC(SF32LB_QSPI_LAYER_TIMEOUT_MS));
+	if (ret < 0) {
+		sys_clear_bits(config->base + LCDC_SETTING, LCD_IF_SETTING_EOF_MASK);
+		sys_write32(SF32LB_LCDC_TRANSFER_IRQS, config->base + LCD_IRQ);
+		data->transfer_pending = false;
+		return -ETIMEDOUT;
 	}
 
-	sys_write32(LCD_IF_IRQ_EOF_RAW_STAT, config->base + LCD_IRQ);
-
-	return 0;
+	return data->transfer_status;
 }
 
 static int mipi_dbi_sf32lb_program_rgb565_layer(const struct device *dev,
@@ -684,6 +752,7 @@ static int mipi_dbi_sf32lb_qspi_send_layer(const struct device *dev, uint32_t ad
 					   uint16_t x0, uint16_t y0, bool byte_swap)
 {
 	const struct dbi_sf32lb_config *config = dev->config;
+	struct dbi_sf32lb_data *data = dev->data;
 	int ret;
 
 	wait_busy(dev);
@@ -696,10 +765,15 @@ static int mipi_dbi_sf32lb_qspi_send_layer(const struct device *dev, uint32_t ad
 		return ret;
 	}
 
-	sys_write32(LCD_IF_IRQ_EOF_RAW_STAT, config->base + LCD_IRQ);
+	k_sem_reset(&data->transfer_done);
+	data->transfer_status = 0;
+	sys_write32(SF32LB_LCDC_TRANSFER_IRQS, config->base + LCD_IRQ);
+
+	data->transfer_pending = true;
+	sys_set_bits(config->base + LCDC_SETTING, LCD_IF_SETTING_EOF_MASK);
 	sys_write32(LCD_IF_COMMAND_START, config->base + LCD_COMMAND);
 
-	return mipi_dbi_sf32lb_wait_eof(dev);
+	return mipi_dbi_sf32lb_wait_transfer_done(dev);
 }
 
 static int mipi_dbi_sf32lb_qspi_write_display(const struct device *dev,
@@ -753,6 +827,7 @@ static int mipi_dbi_write_display_sf32lb(const struct device *dev,
 					 enum display_pixel_format pixfmt)
 {
 	const struct dbi_sf32lb_config *config;
+	struct dbi_sf32lb_data *driver_data = dev->data;
 	uint32_t data_len;
 	const uint8_t *buf;
 	uint8_t bus_type = dbi_config->mode & 0xFU;
@@ -762,13 +837,16 @@ static int mipi_dbi_write_display_sf32lb(const struct device *dev,
 		return -EINVAL;
 	}
 
+	k_mutex_lock(&driver_data->lock, K_FOREVER);
+
 	ret = mipi_dbi_sf32lb_configure(dev, dbi_config);
 	if (ret < 0) {
-		return ret;
+		goto out;
 	}
 
 	if (bus_type == MIPI_DBI_MODE_QSPI) {
-		return mipi_dbi_sf32lb_qspi_write_display(dev, framebuf, desc, pixfmt);
+		ret = mipi_dbi_sf32lb_qspi_write_display(dev, framebuf, desc, pixfmt);
+		goto out;
 	}
 
 	ARG_UNUSED(pixfmt);
@@ -777,13 +855,15 @@ static int mipi_dbi_write_display_sf32lb(const struct device *dev,
 	buf = framebuf;
 
 	if (data_len == 0U) {
-		return 0;
+		ret = 0;
+		goto out;
 	}
 
 	if (bus_type != MIPI_DBI_MODE_8080_BUS_16_BIT &&
 	    bus_type != MIPI_DBI_MODE_8080_BUS_9_BIT &&
 	    bus_type != MIPI_DBI_MODE_8080_BUS_8_BIT) {
-		return -ENOTSUP;
+		ret = -ENOTSUP;
+		goto out;
 	}
 
 	while (data_len > 0) {
@@ -806,12 +886,18 @@ static int mipi_dbi_write_display_sf32lb(const struct device *dev,
 		}
 	}
 
-	return 0;
+	ret = 0;
+
+out:
+	k_mutex_unlock(&driver_data->lock);
+
+	return ret;
 }
 
 static int mipi_dbi_configure_te_sf32lb(const struct device *dev, uint8_t edge, k_timeout_t delay)
 {
 	const struct dbi_sf32lb_config *config = dev->config;
+	struct dbi_sf32lb_data *data = dev->data;
 	uint32_t delay_us = k_ticks_to_us_ceil32(delay.ticks);
 	uint32_t te_conf;
 	uint32_t polarity;
@@ -828,8 +914,10 @@ static int mipi_dbi_configure_te_sf32lb(const struct device *dev, uint8_t edge, 
 		  FIELD_PREP(LCD_IF_TE_CONF_FMARK_POL_Msk, polarity) |
 		  FIELD_PREP(LCD_IF_TE_CONF_MODE_Msk, 0);
 
+	k_mutex_lock(&data->lock, K_FOREVER);
 	sys_write32(delay_us, config->base + TE_CONF2);
 	sys_write32(te_conf, config->base + TE_CONF);
+	k_mutex_unlock(&data->lock);
 
 	return 0;
 }
@@ -845,7 +933,11 @@ static DEVICE_API(mipi_dbi, dbi_sf32lb_api) = {
 static int mipi_dbi_init_sf32lb(const struct device *dev)
 {
 	const struct dbi_sf32lb_config *config = dev->config;
+	struct dbi_sf32lb_data *data = dev->data;
 	int err;
+
+	k_mutex_init(&data->lock);
+	k_sem_init(&data->transfer_done, 0, 1);
 
 	if (!sf32lb_clock_is_ready_dt(&config->clock)) {
 		return -ENODEV;
@@ -863,7 +955,10 @@ static int mipi_dbi_init_sf32lb(const struct device *dev)
 	}
 
 	sys_set_bit(config->base + LCDC_SETTING, LCD_IF_SETTING_AUTO_GATE_EN_Pos);
+	sys_clear_bits(config->base + LCDC_SETTING, LCD_IF_SETTING_EOF_MASK);
+	sys_write32(SF32LB_LCDC_TRANSFER_IRQS, config->base + LCD_IRQ);
 	sys_set_bit(config->base + LCD_IF_CONF, LCD_IF_LCD_IF_CONF_LCD_RSTB_Pos);
+	config->irq_config_func(dev);
 
 	return err;
 }
@@ -872,10 +967,18 @@ static int mipi_dbi_init_sf32lb(const struct device *dev)
 	PINCTRL_DT_INST_DEFINE(n);                                                                 \
 	static struct dbi_sf32lb_data dbi_sf32lb_data_##n;                                         \
                                                                                                    \
+	static void dbi_sf32lb_irq_config_func_##n(const struct device *dev)                       \
+	{                                                                                          \
+		IRQ_CONNECT(DT_IRQN(DT_INST_PARENT(n)), DT_IRQ(DT_INST_PARENT(n), priority),       \
+			    mipi_dbi_sf32lb_isr, DEVICE_DT_INST_GET(n), 0);                        \
+		irq_enable(DT_IRQN(DT_INST_PARENT(n)));                                           \
+	}                                                                                          \
+                                                                                                   \
 	static const struct dbi_sf32lb_config dbi_sf32lb_config_##n = {                            \
 		.base = DT_REG_ADDR(DT_INST_PARENT(n)),                                            \
 		.clock = SF32LB_CLOCK_DT_INST_PARENT_SPEC_GET(n),                                  \
 		.pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),                                       \
+		.irq_config_func = dbi_sf32lb_irq_config_func_##n,                                 \
 	};                                                                                         \
                                                                                                    \
 	DEVICE_DT_INST_DEFINE(n, mipi_dbi_init_sf32lb, NULL, &dbi_sf32lb_data_##n,                 \
