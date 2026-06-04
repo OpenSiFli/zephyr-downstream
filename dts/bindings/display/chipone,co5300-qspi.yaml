@@ -1,0 +1,42 @@
+# Copyright (c) 2026 SiFli Technologies(Nanjing) Co., Ltd
+# SPDX-License-Identifier: Apache-2.0
+
+title: Chipone CO5300 QSPI display controller
+
+description: |
+  DCS-compatible Chipone CO5300 display controller attached through a
+  Quad-SPI/QPI style MIPI-DBI backend.
+
+compatible: "chipone,co5300-qspi"
+
+include:
+  - name: mipi-dbi-device.yaml
+    property-blocklist:
+      - mipi-mode
+  - display-controller.yaml
+
+properties:
+  reg:
+    required: true
+
+  mipi-max-frequency:
+    required: true
+
+  mipi-mode:
+    type: string
+    required: true
+    description: |
+      CO5300 QSPI panels must be attached through the QSPI display transport.
+    enum:
+      - "MIPI_DBI_MODE_QSPI"
+
+  reset-gpios:
+    type: phandle-array
+    description: |
+      GPIO connected to the reset pin. The asserted level is described by
+      the GPIO flags in devicetree.
+
+  avdd-enable-gpios:
+    type: phandle-array
+    description: |
+      GPIO used to enable the panel AVDD supply.

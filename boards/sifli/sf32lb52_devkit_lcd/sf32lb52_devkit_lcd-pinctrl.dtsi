@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2025 Core Devices LLC
+ * Copyright (c) 2025 SiFli Technologies(Nanjing) Co., Ltd
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -39,7 +40,20 @@
 			bias-pull-down;
 		};
 	};
-	
+
+	lcdc_qspi_default: lcdc_qspi_default {
+		group1 {
+			pinmux = <PA02_LCDC1_SPI_TE>,
+				 <PA03_LCDC1_SPI_CS>,
+				 <PA04_LCDC1_SPI_CLK>,
+				 <PA05_LCDC1_SPI_DIO0>,
+				 <PA06_LCDC1_SPI_DIO1>,
+				 <PA07_LCDC1_SPI_DIO2>,
+				 <PA08_LCDC1_SPI_DIO3>;
+			input-enable;
+		};
+	};
+
 	/* MPI1 OPI PSRAM pinmux configuration */
 	mpi1_default: mpi1_default {
 		group1 {

@@ -1,4 +1,5 @@
 # Copyright 2023-2024 NXP
+# Copyright 2025 SiFli Technologies(Nanjing) Co., Ltd
 # SPDX-License-Identifier: Apache-2.0
 #
 # Common fields for MIPI-DBI devices
@@ -20,6 +21,7 @@ properties:
     enum:
       - "MIPI_DBI_MODE_SPI_3WIRE"
       - "MIPI_DBI_MODE_SPI_4WIRE"
+      - "MIPI_DBI_MODE_QSPI"
       - "MIPI_DBI_MODE_6800_BUS_16_BIT"
       - "MIPI_DBI_MODE_6800_BUS_9_BIT"
       - "MIPI_DBI_MODE_6800_BUS_8_BIT"

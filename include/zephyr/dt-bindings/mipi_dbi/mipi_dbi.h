@@ -1,5 +1,6 @@
 /*
  * Copyright 2024,2025 NXP
+ * Copyright 2025 SiFli Technologies(Nanjing) Co., Ltd
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -51,6 +52,12 @@
  *          -'-------------------------------'-------------------------------'-
  */
 #define MIPI_DBI_MODE_SPI_4WIRE 0x2
+/**
+ * Quad-SPI/QPI style display transport. This is for DCS-compatible panels
+ * whose command and pixel transfers are carried by a display-oriented QSPI
+ * controller backend rather than by standard MIPI-DBI Type C signalling.
+ */
+#define MIPI_DBI_MODE_QSPI 0x9
 /**
  * @name Parallel Bus protocol for MIPI DBI Type A based on Motorola 6800 bus.
  *

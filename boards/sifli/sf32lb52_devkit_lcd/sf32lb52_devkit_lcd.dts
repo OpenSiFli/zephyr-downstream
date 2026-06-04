@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2025 Core Devices LLC
+ * Copyright (c) 2025 SiFli Technologies(Nanjing) Co., Ltd
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -27,6 +28,7 @@
 		zephyr,crc = &crc;
 		zephyr,entropy = &trng;
 		zephyr,bt-hci = &mailbox;
+		zephyr,display = &co5300;
 	};
 
 	buttons {
@@ -240,4 +242,27 @@ temp_sensor: &tsen {
 
 &efuse {
 	status = "okay";
+};
+
+&lcdc {
+	status = "okay";
+
+	mipi_dbi: mipi-dbi {
+		status = "okay";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		pinctrl-0 = <&lcdc_qspi_default>;
+		pinctrl-names = "default";
+
+		co5300: display@0 {
+			compatible = "chipone,co5300-qspi";
+			reg = <0>;
+			reset-gpios = <&gpioa_00_31 0 GPIO_ACTIVE_LOW>;
+			avdd-enable-gpios = <&gpioa_32_44 5 GPIO_ACTIVE_HIGH>;
+			width = <390>;
+			height = <450>;
+			mipi-max-frequency = <50000000>;
+			mipi-mode = "MIPI_DBI_MODE_QSPI";
+		};
+	};
 };
