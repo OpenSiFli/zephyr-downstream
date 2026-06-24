@@ -45,6 +45,7 @@ struct bt_sf32lb_data {
 	} tx;
 
 	struct k_sem sem;
+	struct k_sem rx_ready_sem;
 	ipc_queue_handle_t ipc_port;
 
 	struct {
@@ -323,8 +324,6 @@ static void rx_thread(void *p1, void *p2, void *p3)
 {
 	const struct device *dev = p1;
 
-	lcpu_power_on();
-
 	while (1) {
 		int len;
 		struct bt_sf32lb_data *hci = dev->data;
@@ -353,6 +352,7 @@ static void rx_thread(void *p1, void *p2, void *p3)
 				    sys_get_le16(&buf->data[4]) == BT_HCI_EXT_SF32LB52_BT_READY) {
 					/*Bluetooth LCPU RX ready*/
 					hci->rx.ready = true;
+					k_sem_give(&hci->rx_ready_sem);
 				}
 				if (!hci->rx.ready) {
 					LOG_WRN("Got unexpected packet\n");
@@ -554,10 +554,15 @@ static int bt_hci_sf32lb_open(const struct device *dev)
 	LOG_DBG("hci open %p", (void *)dev);
 	r = zbt_config_mailbox(dev);
 	if (r == 0) {
+		lcpu_power_on();
 		tid = k_thread_create(cfg->rx_thread, cfg->rx_thread_stack,
 				      cfg->rx_thread_stack_size, rx_thread, (void *)dev, NULL, NULL,
 				      K_PRIO_COOP(CONFIG_BT_RX_PRIO), 0, K_NO_WAIT);
 		k_thread_name_set(tid, "hci_rx_th");
+		if (k_sem_take(&hci->rx_ready_sem, K_MSEC(1000)) != 0) {
+			LOG_ERR("BT LCPU RX not ready");
+			return -EIO;
+		}
 	}
 	return r;
 }
@@ -577,6 +582,7 @@ static DEVICE_API(bt_hci, hci_sf32lb_driver_api) = {
 		.rx_thread = &rx_thread_##inst,                                                    \
 	};                                                                                         \
 	static struct bt_sf32lb_data hci_data_##inst = {                                           \
+		.rx_ready_sem = Z_SEM_INITIALIZER(hci_data_##inst.rx_ready_sem, 0, 1),           \
 		.rx =                                                                              \
 			{                                                                          \
 				.fifo = Z_FIFO_INITIALIZER(hci_data_##inst.rx.fifo),               \
