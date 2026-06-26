@@ -349,6 +349,7 @@ static void adc_sf32lb_isr(const struct device *dev)
 		channels &= ~BIT(channel);
 	}
 
+	ll_gpadc_disable_it_eoc(gpadc);
 	adc_context_on_sampling_done(&data->ctx, dev);
 }
 
@@ -425,6 +426,7 @@ static void adc_sf32lb_start_conversion(const struct device *dev)
 	const struct adc_sf32lb_config *const cfg = dev->config;
 	GPADC_TypeDef *gpadc = (GPADC_TypeDef *)cfg->base;
 
+	ll_gpadc_enable_it_eoc(gpadc);
 	ll_gpadc_request_start(gpadc);
 }
 
@@ -599,6 +601,8 @@ static int adc_sf32lb_init(const struct device *dev)
 		ll_gpadc_config_slot(gpadc, i, &slot_config);
 	}
 
+	/* Reset value enables EOC interrupt; disable when idle. */
+	ll_gpadc_disable_it_eoc(gpadc);
 	config->irq_config_func();
 
 	data->dev = dev;
