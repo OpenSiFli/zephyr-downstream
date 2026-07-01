@@ -180,11 +180,21 @@ static void i2c_sf32lb_tx_helper(const struct device *dev, uint32_t sr)
 				tcr |= I2C_TCR_STOP;
 			}
 			i2c_sf32lb_write_tcr(i2c, tcr);
-		} else {
+		} else if (!i2c_is_stop_op(data->current_msg)) {
+			/*
+			 * No STOP (RESTART case for combined xfer):
+			 * complete the transfer right away.
+			 * If STOP was issued, wait for MSD to confirm
+			 * the STOP condition has completed on the bus.
+			 */
 			i2c_sf32lb_disable_all_irqs(i2c);
 			data->current_msg = NULL;
 			k_sem_give(&data->i2c_compl);
 		}
+		/*
+		 * else: STOP was programmed in TCR for the last byte.
+		 * The MSD handler below will complete the transfer.
+		 */
 	}
 
 	if (IS_BIT_SET(sr, I2C_SR_MSD_Pos) && (data->remaining == 0)) {
