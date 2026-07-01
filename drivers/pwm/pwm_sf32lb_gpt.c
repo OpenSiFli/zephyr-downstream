@@ -14,7 +14,7 @@
 
 #include <register.h>
 
-#define GPT_CCMRX(ch) (GPT_CCMR1 + ((ch) >> 1U))
+#define GPT_CCMRX(ch) (GPT_CCMR1 + (((ch) >> 1U) << 2))
 #define CCRX(ch)      (GPT_CCR1 + ((ch) << 2U))
 
 #define GPT_CR1   offsetof(GPT_TypeDef, CR1)
