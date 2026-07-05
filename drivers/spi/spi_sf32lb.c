@@ -236,7 +236,10 @@ static int spi_sf32lb_configure(const struct device *dev, const struct spi_confi
 	}
 
 	if (config->operation & SPI_HOLD_ON_CS) {
-		return -ENOTSUP;
+		LOG_DBG("HOLD_FRAME_LOW enabled, CS stays low across transfers");
+		ll_spi_enable_hold_frame_low(spi);
+	} else {
+		ll_spi_disable_hold_frame_low(spi);
 	}
 
 	if (config->operation & SPI_LOCK_ON) {
