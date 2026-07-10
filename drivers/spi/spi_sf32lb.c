@@ -515,7 +515,7 @@ static int spi_sf32lb_wait_not_busy(const struct device *dev)
 	return 0;
 }
 
-static int spi_sf32lb_shift_tx(const struct device *dev)
+static int spi_sf32lb_tx(const struct device *dev, uint8_t dfs)
 {
 	struct spi_sf32lb_data *data = dev->data;
 	const struct spi_sf32lb_config *cfg = dev->config;
@@ -523,42 +523,23 @@ static int spi_sf32lb_shift_tx(const struct device *dev)
 	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 	uint16_t tx_frame = 0;
 
-	if (spi_context_tx_buf_on(ctx)) {
-		if (ll_spi_is_active_flag_tnf(spi)) {
-			if (SPI_WORD_SIZE_GET(ctx->config->operation) == 8) {
+	if (ll_spi_is_active_flag_tnf(spi)) {
+		if (spi_context_tx_buf_on(ctx)) {
+			if (dfs == 1U) {
 				tx_frame = UNALIGNED_GET((uint8_t *)(data->ctx.tx_buf));
-				ll_spi_transmit_data32(spi, tx_frame);
-				spi_context_update_tx(ctx, 1, 1);
-			} else if (SPI_WORD_SIZE_GET(ctx->config->operation) == 16) {
+			} else {
 				tx_frame = UNALIGNED_GET((uint16_t *)(data->ctx.tx_buf));
-				ll_spi_transmit_data32(spi, tx_frame);
-				spi_context_update_tx(ctx, 2, 1);
-			} else {
-				LOG_ERR("Unsupported word size: %u",
-					SPI_WORD_SIZE_GET(ctx->config->operation));
-				return -ENOTSUP;
 			}
 		}
-	} else {
-		if (ll_spi_is_active_flag_tnf(spi)) {
-			if (SPI_WORD_SIZE_GET(ctx->config->operation) == 8) {
-				ll_spi_transmit_data32(spi, tx_frame);
-				spi_context_update_tx(ctx, 1, 1);
-			} else if (SPI_WORD_SIZE_GET(ctx->config->operation) == 16) {
-				ll_spi_transmit_data32(spi, tx_frame);
-				spi_context_update_tx(ctx, 2, 1);
-			} else {
-				LOG_ERR("Unsupported word size: %u",
-					SPI_WORD_SIZE_GET(ctx->config->operation));
-				return -ENOTSUP;
-			}
-		}
+		ll_spi_transmit_data32(spi, tx_frame);
+		spi_context_update_tx(ctx, dfs, 1);
+		LOG_DBG("TX: val=0x%04x, tx_len_rem=%zu", tx_frame, ctx->tx_len);
 	}
 
 	return 0;
 }
 
-static int spi_sf32lb_shift_rx(const struct device *dev)
+static int spi_sf32lb_rx(const struct device *dev, uint8_t dfs)
 {
 	struct spi_sf32lb_data *data = dev->data;
 	const struct spi_sf32lb_config *cfg = dev->config;
@@ -566,82 +547,50 @@ static int spi_sf32lb_shift_rx(const struct device *dev)
 	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 	uint16_t rx_frame = 0;
 
-	if (!spi_context_tx_buf_on(ctx) &&
-		ll_spi_is_active_flag_tnf(spi)) {
-		if (SPI_WORD_SIZE_GET(ctx->config->operation) == 8) {
-			ll_spi_transmit_data32(spi, 0U);
-		} else if (SPI_WORD_SIZE_GET(ctx->config->operation) == 16) {
-			ll_spi_transmit_data32(spi, 0U);
-		} else {
-			LOG_ERR("Unsupported word size: %u",
-				SPI_WORD_SIZE_GET(ctx->config->operation));
-			return -ENOTSUP;
-		}
-	}
-
-	if (spi_context_rx_buf_on(ctx)) {
-		if (ll_spi_is_active_flag_rne(spi)) {
-			if (SPI_WORD_SIZE_GET(ctx->config->operation) == 8) {
-				rx_frame = (uint8_t)ll_spi_receive_data32(spi);
+	if (ll_spi_is_active_flag_rne(spi)) {
+		rx_frame = ll_spi_receive_data32(spi);
+		if (spi_context_rx_buf_on(ctx)) {
+			if (dfs == 1U) {
 				UNALIGNED_PUT(rx_frame, (uint8_t *)data->ctx.rx_buf);
-				spi_context_update_rx(ctx, 1, 1);
-			} else if (SPI_WORD_SIZE_GET(ctx->config->operation) == 16) {
-				rx_frame = ll_spi_receive_data32(spi);
+			} else {
 				UNALIGNED_PUT(rx_frame, (uint16_t *)data->ctx.rx_buf);
-				spi_context_update_rx(ctx, 2, 1);
-			} else {
-				LOG_ERR("Unsupported word size: %u",
-					SPI_WORD_SIZE_GET(ctx->config->operation));
-				return -ENOTSUP;
 			}
 		}
-	} else {
-		if (ll_spi_is_active_flag_rne(spi)) {
-			if (SPI_WORD_SIZE_GET(ctx->config->operation) == 8) {
-				(void)ll_spi_receive_data32(spi);
-				spi_context_update_rx(ctx, 1, 1);
-			} else if (SPI_WORD_SIZE_GET(ctx->config->operation) == 16) {
-				(void)ll_spi_receive_data32(spi);
-				spi_context_update_rx(ctx, 2, 1);
-			} else {
-				LOG_ERR("Unsupported word size: %u",
-					SPI_WORD_SIZE_GET(ctx->config->operation));
-				return -ENOTSUP;
-			}
-		}
+		spi_context_update_rx(ctx, dfs, 1);
+		LOG_DBG("RX: val=0x%04x, rx_len_rem=%zu", rx_frame, ctx->rx_len);
 	}
 
 	return 0;
 }
 
-static int spi_sf32lb_frame_exchange(const struct device *dev)
+static int spi_sf32lb_txrx(const struct device *dev, uint8_t dfs, int *dummy)
 {
 	struct spi_sf32lb_data *data = dev->data;
 	const struct spi_sf32lb_config *cfg = dev->config;
 	struct spi_context *ctx = &data->ctx;
 	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
-	int ret = 0;
-
-	/* Check if the SPI is already enabled */
-	if (!ll_spi_is_enabled(spi)) {
-		/* Enable SPI peripheral */
-		ll_spi_enable(spi);
-	}
 
 	if (spi_context_tx_on(ctx)) {
-		ret = spi_sf32lb_shift_tx(dev);
-		if (ret < 0) {
-			return ret;
-		}
-	}
-	if (spi_context_rx_on(ctx)) {
-		ret = spi_sf32lb_shift_rx(dev);
-		if (ret < 0) {
-			return ret;
+		spi_sf32lb_tx(dev, dfs);
+	} else if (*dummy < 0) {
+		if (ll_spi_is_active_flag_tnf(spi)) {
+			ll_spi_transmit_data32(spi, 0U);
+			LOG_DBG("TX dummy: val=0x00.");
+			(*dummy)++;
 		}
 	}
 
-	return ret;
+	if (spi_context_rx_on(ctx)) {
+		spi_sf32lb_rx(dev, dfs);
+	} else if (*dummy > 0) {
+		if (ll_spi_is_active_flag_rne(spi)) {
+			uint16_t rx_frame = ll_spi_receive_data32(spi);
+			LOG_DBG("RX dummy: val=0x%04x.", rx_frame);
+			(*dummy)--;
+		}
+	}
+
+	return 0;
 }
 
 static int spi_sf32lb_transceive_poll(const struct device *dev, const struct spi_config *config,
@@ -652,6 +601,7 @@ static int spi_sf32lb_transceive_poll(const struct device *dev, const struct spi
 	struct spi_sf32lb_data *data = dev->data;
 	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
 	uint8_t dfs;
+	int dummy;
 	int ret;
 
 	spi_context_lock(&data->ctx, false, NULL, NULL, config);
@@ -676,8 +626,12 @@ static int spi_sf32lb_transceive_poll(const struct device *dev, const struct spi
 	spi_sf32lb_reset_fifos(dev);
 	spi_sf32lb_flush_rx_fifo(dev);
 	spi_sf32lb_clear_poll_flags(spi);
+	/* `dummy` is used to align TX and RX lengths, if dummy > 0, RX needs dummy reads */
+	dummy = ((int)spi_context_total_tx_len(&data->ctx) -
+		 (int)spi_context_total_rx_len(&data->ctx)) /
+		 dfs;
 	do {
-		ret = spi_sf32lb_frame_exchange(dev);
+		ret = spi_sf32lb_txrx(dev, dfs, &dummy);
 		if (ret < 0) {
 			break;
 		}
@@ -832,28 +786,28 @@ static int spi_sf32lb_init(const struct device *dev)
 	return err;
 }
 
-#define SPI_SF32LB_DEFINE(n)                                                                       \
+#define SPI_SF32LB_DEFINE(n)                                                                          \
 	IF_ENABLED(CONFIG_SPI_ASYNC,                                                               \
-		(static void spi_sf32lb_irq_config_func_##n(void);))                               \
-	PINCTRL_DT_INST_DEFINE(n);                                                                 \
-	static struct spi_sf32lb_data spi_sf32lb_data_##n = {                                      \
-		SPI_CONTEXT_INIT_LOCK(spi_sf32lb_data_##n, ctx),                                   \
-		SPI_CONTEXT_INIT_SYNC(spi_sf32lb_data_##n, ctx),                                   \
-		SPI_CONTEXT_CS_GPIOS_INITIALIZE(DT_DRV_INST(n), ctx)};                             \
-                                                                                                   \
-	static const struct spi_sf32lb_config spi_sf32lb_config_##n = {                            \
-		.base = DT_INST_REG_ADDR(n),                                                       \
-		.clock = SF32LB_CLOCK_DT_INST_SPEC_GET(n),                                         \
-		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),                                         \
+		(static void spi_sf32lb_irq_config_func_##n(void);)) \
+	PINCTRL_DT_INST_DEFINE(n);                                                                    \
+	static struct spi_sf32lb_data spi_sf32lb_data_##n = {                                         \
+		SPI_CONTEXT_INIT_LOCK(spi_sf32lb_data_##n, ctx),                                      \
+		SPI_CONTEXT_INIT_SYNC(spi_sf32lb_data_##n, ctx),                                      \
+		SPI_CONTEXT_CS_GPIOS_INITIALIZE(DT_DRV_INST(n), ctx)};                                \
+                                                                                                      \
+	static const struct spi_sf32lb_config spi_sf32lb_config_##n = {                               \
+		.base = DT_INST_REG_ADDR(n),                                                          \
+		.clock = SF32LB_CLOCK_DT_INST_SPEC_GET(n),                                            \
+		.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),                                            \
 		IF_ENABLED(CONFIG_SPI_ASYNC,                                                       \
-			(.irq_config_func = spi_sf32lb_irq_config_func_##n,))                      \
-		.dma_used = DT_INST_NODE_HAS_PROP(n, dmas),                                        \
-		.tx_dma = SF32LB_DMA_DT_INST_SPEC_GET_BY_NAME_OR(n, tx, {}),                       \
-		.rx_dma = SF32LB_DMA_DT_INST_SPEC_GET_BY_NAME_OR(n, rx, {}),                       \
-	};                                                                                         \
-	DEVICE_DT_INST_DEFINE(n, spi_sf32lb_init, NULL, &spi_sf32lb_data_##n,                      \
-			      &spi_sf32lb_config_##n, POST_KERNEL, CONFIG_SPI_INIT_PRIORITY,       \
-			      &spi_sf32lb_api);                                                    \
+			(.irq_config_func = spi_sf32lb_irq_config_func_##n,)) .dma_used =            \
+				    DT_INST_NODE_HAS_PROP(n, dmas),                                   \
+			   .tx_dma = SF32LB_DMA_DT_INST_SPEC_GET_BY_NAME_OR(n, tx, {}),               \
+			   .rx_dma = SF32LB_DMA_DT_INST_SPEC_GET_BY_NAME_OR(n, rx, {}),               \
+	};                                                                                            \
+	DEVICE_DT_INST_DEFINE(n, spi_sf32lb_init, NULL, &spi_sf32lb_data_##n,                         \
+			      &spi_sf32lb_config_##n, POST_KERNEL, CONFIG_SPI_INIT_PRIORITY,          \
+			      &spi_sf32lb_api);                                                       \
 	IF_ENABLED(CONFIG_SPI_ASYNC,                                                               \
 		(static void spi_sf32lb_irq_config_func_##n(void)                                  \
 		{                                                                                  \
