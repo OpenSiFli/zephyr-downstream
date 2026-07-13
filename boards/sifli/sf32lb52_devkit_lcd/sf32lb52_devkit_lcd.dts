@@ -266,3 +266,9 @@ temp_sensor: &tsen {
 		};
 	};
 };
+
+&i2s1 {
+	status = "okay";
+	pinctrl-0 = <&i2s1_default>;
+	pinctrl-names = "default";
+};

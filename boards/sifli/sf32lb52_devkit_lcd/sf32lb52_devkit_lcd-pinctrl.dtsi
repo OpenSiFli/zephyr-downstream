@@ -87,6 +87,19 @@
 			input-enable;
 		};
 	};
+
+	i2s1_default: i2s1_default {
+		group1 {
+			pinmux = <PA29_I2S1_BCK>, <PA30_I2S1_LRCK>,
+				 <PA25_I2S1_SDO>, <PA24_I2S1_MCLK>;
+			bias-pull-down;
+		};
+		group2 {
+			pinmux = <PA28_I2S1_SDI>;
+			input-enable;
+			bias-pull-down;
+		};
+	};
 };
 
 &pmuc_clk {
