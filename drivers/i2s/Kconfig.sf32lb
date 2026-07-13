@@ -1,0 +1,14 @@
+# Copyright (c) 2026
+# SPDX-License-Identifier: Apache-2.0
+
+config I2S_SF32LB
+	bool "SiFli SF32LB I2S driver (LL)"
+	default y
+	depends on DT_HAS_SIFLI_SF32LB_I2S_ENABLED
+	select DMA
+	help
+	  Enable I2S driver for SF32LB MCUs using the low-level (LL)
+	  abstraction layer.  This driver supports standard I2S,
+	  Left-Justified, Right-Justified, and DSP/PCM serial audio
+	  formats in both master and slave modes. Data transfers use DMA,
+	  with asynchronous queue and memory-slab ownership semantics.

@@ -229,6 +229,8 @@
 		i2s1: i2s@50009000 {
 			compatible = "sifli,sf32lb-i2s";
 			reg = <0x50009000 0x400>;
+			#address-cells = <1>;
+			#size-cells = <0>;
 			clocks = <&rcc_clk SF32LB52X_CLOCK_I2S1>;
 			interrupts = <64 0>;
 			status = "disabled";

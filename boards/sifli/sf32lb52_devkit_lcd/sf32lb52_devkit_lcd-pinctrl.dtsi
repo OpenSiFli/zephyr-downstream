@@ -92,6 +92,7 @@
 		group1 {
 			pinmux = <PA29_I2S1_BCK>, <PA30_I2S1_LRCK>,
 				 <PA25_I2S1_SDO>, <PA24_I2S1_MCLK>;
+			input-enable;
 			bias-pull-down;
 		};
 		group2 {
