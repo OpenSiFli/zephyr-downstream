@@ -27,6 +27,7 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/kernel.h>
 #include <zephyr/net_buf.h>
+#include <zephyr/shell/shell.h>
 #include <zephyr/sys/__assert.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
@@ -141,6 +142,29 @@ static uint8_t sink_broadcast_code[BT_ISO_BROADCAST_CODE_SIZE];
 
 static int stop_adv(void);
 static uint8_t get_stream_count(uint32_t bitfield);
+
+static int cmd_broadcast_code_set(const struct shell *shell, size_t argc, char **argv)
+{
+	const size_t code_len = strlen(argv[1]);
+
+	ARG_UNUSED(argc);
+
+	if (code_len == 0U || code_len > sizeof(sink_broadcast_code)) {
+		shell_error(shell, "Code must contain 1 to %u ASCII bytes",
+			    (unsigned int)sizeof(sink_broadcast_code));
+		return -EINVAL;
+	}
+
+	memset(sink_broadcast_code, 0, sizeof(sink_broadcast_code));
+	memcpy(sink_broadcast_code, argv[1], code_len);
+	shell_print(shell, "Broadcast Code accepted (%u bytes)", (unsigned int)code_len);
+	k_sem_give(&sem_broadcast_code_received);
+
+	return 0;
+}
+
+SHELL_CMD_REGISTER(bcode, NULL, "Set Broadcast Code: bcode <1-16 ASCII bytes>",
+		   cmd_broadcast_code_set);
 
 static void stream_connected_cb(struct bt_bap_stream *bap_stream)
 {
