@@ -3,6 +3,13 @@
 
 mainmenu "Bluetooth: BAP Unicast Client"
 
+config USE_CODEC_AUDIO_OUTPUT
+	bool "Use Codec Audio as output"
+	depends on LIBLC3
+	select RING_BUFFER
+	help
+	  Enables PCM playback through the hardware audio codec.
+
 config INFO_REPORTING_INTERVAL
 	int "Number of SDUs received between each information report"
 	default 1000

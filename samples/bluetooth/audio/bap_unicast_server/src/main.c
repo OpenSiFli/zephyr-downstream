@@ -38,6 +38,7 @@
 #include <zephyr/types.h>
 
 #include "stream_tx.h"
+#include "hw_codec.h"
 
 #define AVAILABLE_SINK_CONTEXT  (BT_AUDIO_CONTEXT_TYPE_UNSPECIFIED | \
 				 BT_AUDIO_CONTEXT_TYPE_CONVERSATIONAL | \
@@ -102,6 +103,8 @@ static const struct bt_data ad[] = {
 static lc3_decoder_t lc3_decoder;
 static lc3_decoder_mem_48k_t lc3_decoder_mem;
 static int frames_per_sdu;
+static struct bt_bap_stream *codec_stream;
+static uint32_t pcm_bytes_per_frame;
 
 #endif
 
@@ -315,6 +318,29 @@ static int lc3_enable(struct bt_bap_stream *stream, const uint8_t meta[], size_t
 
 		frames_per_sdu =
 			bt_audio_codec_cfg_get_frame_blocks_per_sdu(stream->codec_cfg, true);
+		if (frames_per_sdu <= 0) {
+			*rsp = BT_BAP_ASCS_RSP(BT_BAP_ASCS_RSP_CODE_CONF_INVALID,
+					       BT_BAP_ASCS_REASON_CODEC_DATA);
+			return -EINVAL;
+		}
+
+		if (IS_ENABLED(CONFIG_USE_CODEC_AUDIO_OUTPUT) && stream_dir(stream) == BT_AUDIO_DIR_SINK &&
+		    codec_stream == NULL) {
+			const uint32_t pcm_size = (frame_duration_us * freq / USEC_PER_SEC) *
+					  sizeof(int16_t);
+
+			ret = hw_codec_open();
+			if (ret == 0) {
+				ret = hw_codec_cfg(freq, pcm_size);
+			}
+			if (ret != 0) {
+				printk("Failed to start PCM playback: %d\n", ret);
+				return ret;
+			}
+
+			codec_stream = stream;
+			pcm_bytes_per_frame = pcm_size;
+		}
 
 		lc3_decoder = lc3_setup_decoder(frame_duration_us,
 						freq,
@@ -457,6 +483,12 @@ static void stream_recv_lc3_codec(struct bt_bap_stream *stream,
 		} else if (err < 0) {
 			printk("[%d]: Decoder failed - wrong parameters?: %d\n", i, err);
 		}
+
+		if (IS_ENABLED(CONFIG_USE_CODEC_AUDIO_OUTPUT) && stream == codec_stream && err >= 0 &&
+		    hw_codec_write_data((const uint8_t *)audio_buf, pcm_bytes_per_frame) !=
+			pcm_bytes_per_frame) {
+			printk("PCM output buffer full\n");
+		}
 	}
 }
 
@@ -483,6 +515,14 @@ static void stream_recv(struct bt_bap_stream *stream,
 static void stream_stopped(struct bt_bap_stream *stream, uint8_t reason)
 {
 	printk("Audio Stream %p stopped with reason 0x%02X\n", stream, reason);
+
+#if defined(CONFIG_LIBLC3)
+	if (IS_ENABLED(CONFIG_USE_CODEC_AUDIO_OUTPUT) && stream == codec_stream) {
+		(void)hw_codec_close();
+		codec_stream = NULL;
+		pcm_bytes_per_frame = 0U;
+	}
+#endif
 
 	if (IS_ENABLED(CONFIG_BT_AUDIO_TX) && stream_dir(stream) == BT_AUDIO_DIR_SOURCE) {
 		const int err = stream_tx_unregister(stream);
