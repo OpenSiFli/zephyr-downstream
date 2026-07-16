@@ -86,6 +86,7 @@ static uint32_t broadcaster_broadcast_id;
 static struct bt_bap_stream *bap_streams_p[CONFIG_BT_BAP_BROADCAST_SNK_STREAM_COUNT];
 static volatile bool big_synced;
 static volatile bool base_received;
+static uint8_t codec_stream_count;
 static struct bt_conn *broadcast_assistant_conn;
 static struct bt_le_ext_adv *ext_adv;
 
@@ -190,7 +191,7 @@ static void stream_started_cb(struct bt_bap_stream *bap_stream)
 	struct bt_iso_info info;
 	int err;
 
-	if (IS_ENABLED(CONFIG_USE_CODEC_AUDIO_OUTPUT)) {
+	if (IS_ENABLED(CONFIG_USE_CODEC_AUDIO_OUTPUT) && codec_stream_count == 0U) {
 		err = hw_codec_open();
 		if (err != 0) {
 			printk("Audio codec open failed (err %d)\n", err);
@@ -207,6 +208,8 @@ static void stream_started_cb(struct bt_bap_stream *bap_stream)
 	err = stream_rx_started(bap_stream);
 	if (err != 0) {
 		printk("stream_rx_started returned error: %d\n", err);
+	} else if (IS_ENABLED(CONFIG_USE_CODEC_AUDIO_OUTPUT)) {
+		codec_stream_count++;
 	}
 
 	k_sem_give(&sem_stream_started);
@@ -228,7 +231,11 @@ static void stream_stopped_cb(struct bt_bap_stream *bap_stream, uint8_t reason)
 		printk("Failed to take sem_stream_started: %d\n", err);
 	}
 
-	if (IS_ENABLED(CONFIG_USE_CODEC_AUDIO_OUTPUT)) {
+	if (IS_ENABLED(CONFIG_USE_CODEC_AUDIO_OUTPUT) && codec_stream_count > 0U) {
+		codec_stream_count--;
+	}
+
+	if (IS_ENABLED(CONFIG_USE_CODEC_AUDIO_OUTPUT) && codec_stream_count == 0U) {
 		err = hw_codec_close();
 		if (err != 0) {
 			printk("Audio codec close failed (err %d)\n", err);

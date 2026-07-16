@@ -33,12 +33,13 @@ int hw_codec_open(void);
  * audio data with @ref hw_codec_write_data.
  *
  * @param samplerate Sampling rate in Hz (for example, 48000 for 48 kHz).
+ * @param block_size Number of PCM bytes in one DMA block.
  *
  * @retval 0        On success.
  * @retval -EALREADY If the codec is already configured.
  * @return negative  On other failures, with a negative error code.
  */
-int hw_codec_cfg(uint32_t samplerate);
+int hw_codec_cfg(uint32_t samplerate, uint32_t block_size);
 
 /**
  * @brief Write audio data to the codec for playback.

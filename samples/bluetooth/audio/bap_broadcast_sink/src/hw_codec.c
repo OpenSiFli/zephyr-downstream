@@ -25,19 +25,7 @@
 
 LOG_MODULE_REGISTER(codec, CONFIG_LOG_DEFAULT_LEVEL);
 
-/*
- * Size of one audio block transferred to the codec, in bytes.
- *
- * For the configuration used here (16bit samples, mono channel),
- * 480 bytes correspond to 240 PCM samples per block. This value was
- * chosen as a compromise between:
- *  - keeping latency reasonably low (smaller blocks)
- *  - avoiding excessive interrupt / DMA overhead (larger blocks).
- * If the PCM format (sample width or number of channels) is changed,
- * this constant should be revisited so that the block size remains
- * appropriate for the target use case and hardware.
- */
-#define CODEC_BLOCK_SIZE 480U
+#define CODEC_MAX_BLOCK_SIZE 960U
 
 /*
  * Default speaker/output volume sent via AUDIO_PROPERTY_OUTPUT_VOLUME.
@@ -52,20 +40,21 @@ LOG_MODULE_REGISTER(codec, CONFIG_LOG_DEFAULT_LEVEL);
 /*
  * Total size of the ring buffer used to queue audio data for the codec.
  *
- * The buffer is sized to hold 20 CODEC_BLOCK_SIZE blocks. Having multiple
+ * The buffer is sized to hold 20 maximum-size blocks. Having multiple
  * blocks queued reduces the likelihood of underruns when the producer is
  * briefly delayed, while still keeping overall latency and RAM usage
  * bounded. Increasing the multiplier adds buffering (and latency / RAM
  * consumption); decreasing it reduces buffering but makes underruns more
  * likely on a busy system.
  */
-#define RING_BUF_SIZE (CODEC_BLOCK_SIZE * 20U)
+#define RING_BUF_SIZE (CODEC_MAX_BLOCK_SIZE * 20U)
 
 static uint8_t ring_buffer[RING_BUF_SIZE];
 static struct ring_buf rb;
 static bool codec_configured;
-static uint8_t block_data[CODEC_BLOCK_SIZE];
+static uint8_t block_data[CODEC_MAX_BLOCK_SIZE];
 static const struct device *g_dev;
+static uint32_t codec_block_size;
 
 static void tx_done(const struct device *dev, void *user_data)
 {
@@ -76,20 +65,20 @@ static void tx_done(const struct device *dev, void *user_data)
 	ARG_UNUSED(user_data);
 
 	avail = ring_buf_size_get(&rb);
-	if (avail < CODEC_BLOCK_SIZE) {
+	if (avail < codec_block_size) {
 		LOG_WRN("Buffer does not have enough data for a full block");
 		return;
 	}
 
-	read = ring_buf_get(&rb, block_data, CODEC_BLOCK_SIZE);
-	if (read != CODEC_BLOCK_SIZE) {
+	read = ring_buf_get(&rb, block_data, codec_block_size);
+	if (read != codec_block_size) {
 		LOG_WRN("Failed to read full block from ring buffer: %u bytes", read);
 		return;
 	}
 
-	written = audio_codec_write(dev, block_data, CODEC_BLOCK_SIZE);
-	if (written != CODEC_BLOCK_SIZE) {
-		LOG_WRN("Failed to write full block data to audio device: %u bytes", written);
+	written = audio_codec_write(dev, block_data, codec_block_size);
+	if (written != 0) {
+		LOG_WRN("Failed to write block data to audio device: %d", written);
 		return;
 	}
 }
@@ -105,7 +94,7 @@ int hw_codec_open(void)
 	return 0;
 }
 
-int hw_codec_cfg(uint32_t samplerate)
+int hw_codec_cfg(uint32_t samplerate, uint32_t block_size)
 {
 	int ret;
 	audio_property_value_t val = {.vol = SPEAKER_VOL};
@@ -114,16 +103,21 @@ int hw_codec_cfg(uint32_t samplerate)
 		.dai_cfg.pcm.dir = AUDIO_DAI_DIR_TX,
 		.dai_cfg.pcm.pcm_width = AUDIO_PCM_WIDTH_16_BITS,
 		.dai_cfg.pcm.channels = 1U,
-		.dai_cfg.pcm.block_size = CODEC_BLOCK_SIZE,
+		.dai_cfg.pcm.block_size = block_size,
 		.dai_cfg.pcm.samplerate = samplerate,
 	};
+
+	if (block_size == 0U || block_size > CODEC_MAX_BLOCK_SIZE) {
+		return -EINVAL;
+	}
 
 	if (codec_configured) {
 		LOG_WRN("Already configured");
 		return -EALREADY;
 	}
 
-	LOG_INF("codec: samplerate=%d block_size=%d", samplerate, CODEC_BLOCK_SIZE);
+	codec_block_size = block_size;
+	LOG_INF("codec: samplerate=%d block_size=%d", samplerate, codec_block_size);
 	audio_codec_register_done_callback(g_dev, tx_done, NULL, NULL, NULL);
 	ret = audio_codec_configure(g_dev, &cfg);
 	if (ret != 0) {

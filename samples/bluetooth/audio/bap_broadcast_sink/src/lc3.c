@@ -64,6 +64,7 @@ static K_FIFO_DEFINE(lc3_in_fifo);
  */
 static struct stream_rx *usb_left_stream;
 static struct stream_rx *usb_right_stream;
+static struct stream_rx *codec_stream;
 
 static int init_lc3_decoder(struct stream_rx *stream, uint32_t lc3_frame_duration_us,
 			    uint32_t lc3_freq_hz)
@@ -197,17 +198,17 @@ static int usb_add_frame(const struct stream_rx *stream, int chn, uint32_t ts)
 
 static int codec_add_frame(const struct stream_rx *stream, int chn, uint32_t ts)
 {
-	ARG_UNUSED(stream);
 	ARG_UNUSED(ts);
+	const uint32_t pcm_size = (stream->lc3_frame_duration_us * stream->lc3_freq_hz /
+				   USEC_PER_SEC) * sizeof(lc3_rx_buf[0]);
+	uint32_t bytes_put;
 
-	/* Codec output is mono: only the primary (channel 0) is forwarded.
-	 * Any additional channels are intentionally ignored.
-	 */
-	if (chn != 0) {
+	if (stream != codec_stream || chn != 0) {
 		return 0;
-	} else {
-		return hw_codec_write_data((const uint8_t *)lc3_rx_buf, sizeof(lc3_rx_buf));
 	}
+
+	bytes_put = hw_codec_write_data((const uint8_t *)lc3_rx_buf, pcm_size);
+	return bytes_put == pcm_size ? 0 : -ENOMEM;
 }
 
 static size_t decode_frame_block(struct lc3_data *data, size_t frame_cnt)
@@ -360,6 +361,9 @@ int lc3_enable(struct stream_rx *stream)
 		return -EINVAL;
 	}
 
+	stream->lc3_frame_duration_us = lc3_frame_duration_us;
+	stream->lc3_freq_hz = lc3_freq_hz;
+
 	ret = bt_audio_codec_cfg_get_frame_blocks_per_sdu(codec_cfg, true);
 	if (ret >= 0) {
 		stream->lc3_frame_blocks_per_sdu = (uint8_t)ret;
@@ -414,7 +418,14 @@ int lc3_enable(struct stream_rx *stream)
 	}
 
 	if (IS_ENABLED(CONFIG_USE_CODEC_AUDIO_OUTPUT)) {
-		const int err = hw_codec_cfg(lc3_freq_hz);
+		const uint32_t pcm_size = (lc3_frame_duration_us * lc3_freq_hz / USEC_PER_SEC) *
+					  sizeof(lc3_rx_buf[0]);
+
+		if (codec_stream == NULL) {
+			codec_stream = stream;
+		}
+
+		const int err = hw_codec_cfg(lc3_freq_hz, pcm_size);
 
 		if ((err != 0) && (err != -EALREADY)) {
 			LOG_ERR("Failed to configure codec: %d", err);
@@ -431,6 +442,9 @@ int lc3_disable(struct stream_rx *stream)
 	}
 
 	stream->lc3_decoder = NULL;
+	if (codec_stream == stream) {
+		codec_stream = NULL;
+	}
 
 	if (IS_ENABLED(CONFIG_USE_USB_AUDIO_OUTPUT)) {
 		if (usb_left_stream == stream) {

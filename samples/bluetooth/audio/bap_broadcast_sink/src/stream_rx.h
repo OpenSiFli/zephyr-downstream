@@ -60,6 +60,10 @@ struct stream_rx {
 
 	/** Number of channels - Used to split the SDU into frame blocks when decoding */
 	uint8_t lc3_chan_cnt;
+	/** LC3 frame duration in microseconds */
+	uint32_t lc3_frame_duration_us;
+	/** LC3 sample rate in Hz */
+	uint32_t lc3_freq_hz;
 
 	/**
 	 * @brief The configured channels of the stream
