@@ -1949,15 +1949,27 @@ static void smp_pairing_complete(struct bt_smp *smp, uint8_t status)
 		status = BT_SMP_ERR_UNSPECIFIED;
 	}
 
-	if (!status) {
+    if (!status)
+    {
 #if defined(CONFIG_BT_CLASSIC)
+        uint8_t lebr_key[16];
+        const struct bt_conn_auth_cb *smp_auth_cb = latch_auth_cb(smp);
+
+        if (smp_auth_cb && smp_auth_cb->le_br_key &&
+                ble_key_2_bt_key(atomic_test_bit(smp->flags, SMP_FLAG_CT2),
+                                 conn->le.keys->ltk.val, lebr_key) == 0)
+        {
+            smp_auth_cb->le_br_key(conn, lebr_key);
+        }
+
 		/*
 		 * Don't derive if Debug Keys are used.
 		 * TODO should we allow this if BR/EDR is already connected?
 		 */
 		if (atomic_test_bit(smp->flags, SMP_FLAG_DERIVE_LK) &&
-		    (!atomic_test_bit(smp->flags, SMP_FLAG_SC_DEBUG_KEY) ||
-		     IS_ENABLED(CONFIG_BT_STORE_DEBUG_KEYS))) {
+				(!atomic_test_bit(smp->flags, SMP_FLAG_SC_DEBUG_KEY) ||
+				 IS_ENABLED(CONFIG_BT_STORE_DEBUG_KEYS)))
+		{
 			sc_derive_link_key(smp);
 		}
 #endif /* CONFIG_BT_CLASSIC */
