@@ -11,6 +11,7 @@
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/irq.h>
+#include <zephyr/sys/util.h>
 
 #include <register.h>
 
@@ -25,10 +26,10 @@
 #define GPT_CCMR1 offsetof(GPT_TypeDef, CCMR1)
 #define GPT_EGR   offsetof(GPT_TypeDef, EGR)
 
-#define GPT_CCMR1_OC1M_1 (0x2U << GPT_CCMR1_OC1M_Pos)
-#define GPT_CCMR1_OC1M_2 (0x4U << GPT_CCMR1_OC1M_Pos)
-
-#define GPT_OCMODE_PWM1 (GPT_CCMR1_OC1M_1 | GPT_CCMR1_OC1M_2)
+#define GPT_CCMR1_OC1M_PWM1 FIELD_PREP(GPT_CCMR1_OC1M, 6U)
+#define GPT_CCMR1_OC2M_PWM1 FIELD_PREP(GPT_CCMR1_OC2M, 6U)
+#define GPT_CCMR2_OC3M_PWM1 FIELD_PREP(GPT_CCMR2_OC3M, 6U)
+#define GPT_CCMR2_OC4M_PWM1 FIELD_PREP(GPT_CCMR2_OC4M, 6U)
 
 #define MAX_CH_NUM (4U)
 
@@ -80,22 +81,22 @@ static int pwm_sf32lb_set_cycles(const struct device *dev, uint32_t channel, uin
 	case 0:
 		sys_clear_bits(config->base + GPT_CCMRX(channel), GPT_CCMR1_OC1M);
 		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_CCMR1_OC1PE);
-		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_OCMODE_PWM1);
+		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_CCMR1_OC1M_PWM1);
 		break;
 	case 1:
 		sys_clear_bits(config->base + GPT_CCMRX(channel), GPT_CCMR1_OC2M);
 		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_CCMR1_OC2PE);
-		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_OCMODE_PWM1);
+		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_CCMR1_OC2M_PWM1);
 		break;
 	case 2:
 		sys_clear_bits(config->base + GPT_CCMRX(channel), GPT_CCMR2_OC3M);
 		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_CCMR2_OC3PE);
-		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_OCMODE_PWM1);
+		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_CCMR2_OC3M_PWM1);
 		break;
 	case 3:
 		sys_clear_bits(config->base + GPT_CCMRX(channel), GPT_CCMR2_OC4M);
 		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_CCMR2_OC4PE);
-		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_OCMODE_PWM1);
+		sys_set_bits(config->base + GPT_CCMRX(channel), GPT_CCMR2_OC4M_PWM1);
 		break;
 	default:
 		return -EINVAL;
