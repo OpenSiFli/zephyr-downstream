@@ -12,7 +12,12 @@
 &pinctrl {
 	gptim2_pwm_default: gptim2_pwm_default {
 		group1 {
-			pinmux = <PA00_GPTIM2_CH1>;
+			pinmux = <
+				PA00_GPTIM2_CH1
+				PA01_GPTIM2_CH2
+				PA02_GPTIM2_CH3
+				PA03_GPTIM2_CH4
+			>;
 		};
 	};
 };

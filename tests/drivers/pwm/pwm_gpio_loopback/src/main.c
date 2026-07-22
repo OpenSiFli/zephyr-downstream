@@ -21,8 +21,6 @@
 #include <math.h>
 #include <zephyr/pm/device_runtime.h>
 
-static struct gpio_callback gpio_cb;
-
 #define TEST_PWM_COUNT                      DT_PROP_LEN(DT_PATH(zephyr_user), pwms)
 #define TEST_PWM_CONFIG_ENTRY(idx, node_id) PWM_DT_SPEC_GET_BY_IDX(node_id, idx)
 #define TEST_PWM_CONFIG_ARRAY(node_id)                                                             \
@@ -39,6 +37,8 @@ static struct gpio_callback gpio_cb;
 
 static const struct pwm_dt_spec pwms_dt[] = TEST_PWM_CONFIG_ARRAY(DT_PATH(zephyr_user));
 static const struct gpio_dt_spec gpios_dt[] = TEST_GPIO_CONFIG_ARRAY(DT_PATH(zephyr_user));
+
+static struct gpio_callback gpio_cb[TEST_GPIO_COUNT];
 
 static struct test_context {
 	uint32_t last_edge_time;
@@ -96,18 +96,18 @@ static void setup_edge_detect(void)
 	ctx.skip_cnt = 0;
 }
 
-static void config_gpio(const struct gpio_dt_spec *gpio_dt)
+static void config_gpio(const struct gpio_dt_spec *gpio_dt, int idx)
 {
 	gpio_pin_configure_dt(gpio_dt, GPIO_INPUT);
-	gpio_init_callback(&gpio_cb, gpio_edge_isr, BIT(gpio_dt->pin));
-	gpio_add_callback(gpio_dt->port, &gpio_cb);
+	gpio_init_callback(&gpio_cb[idx], gpio_edge_isr, BIT(gpio_dt->pin));
+	gpio_add_callback(gpio_dt->port, &gpio_cb[idx]);
 }
 
-static void enable_int_gpio(const struct gpio_dt_spec *gpio_dt, bool enable)
+static void enable_int_gpio(const struct gpio_dt_spec *gpio_dt, bool enable, int idx)
 {
 	if (enable) {
 		gpio_pin_interrupt_configure(gpio_dt->port, gpio_dt->pin, GPIO_INT_EDGE_BOTH);
-		gpio_cb.pin_mask = BIT(gpio_dt->pin);
+		gpio_cb[idx].pin_mask = BIT(gpio_dt->pin);
 	} else {
 		gpio_pin_interrupt_configure(gpio_dt->port, gpio_dt->pin, GPIO_INT_DISABLE);
 	}
@@ -190,7 +190,7 @@ static int check_timing(const struct pwm_dt_spec *pwm_dt, const struct gpio_dt_s
 }
 
 static void test_run(const struct pwm_dt_spec *pwm_dt, const struct gpio_dt_spec *gpio_dt,
-		     uint8_t duty, bool set_channel)
+		     uint8_t duty, bool set_channel, int gpio_idx)
 {
 	int result;
 	uint32_t pulse = (uint32_t)((pwm_dt->period * duty) / 100);
@@ -205,11 +205,11 @@ static void test_run(const struct pwm_dt_spec *pwm_dt, const struct gpio_dt_spec
 		zassert_false(result, "Failed on pwm_set() call");
 	}
 
-	enable_int_gpio(gpio_dt, true);
+	enable_int_gpio(gpio_dt, true, gpio_idx);
 
 	result = check_timing(pwm_dt, gpio_dt, duty);
 
-	enable_int_gpio(gpio_dt, false);
+	enable_int_gpio(gpio_dt, false, gpio_idx);
 
 	zassert_equal(result, TC_PASS, "Test case failed");
 }
@@ -220,16 +220,16 @@ ZTEST(pwm_gpio_loopback, test_pwm)
 		zassert_true(device_is_ready(pwms_dt[i].dev), "PWM device is not ready");
 
 		/* Test case: [Duty: 25%] */
-		test_run(&pwms_dt[i], &gpios_dt[i], 25, true);
+		test_run(&pwms_dt[i], &gpios_dt[i], 25, true, i);
 
 		/* Test case: [Duty: 100%] */
-		test_run(&pwms_dt[i], &gpios_dt[i], 100, true);
+		test_run(&pwms_dt[i], &gpios_dt[i], 100, true, i);
 
 		/* Test case: [Duty: 0%] */
-		test_run(&pwms_dt[i], &gpios_dt[i], 0, true);
+		test_run(&pwms_dt[i], &gpios_dt[i], 0, true, i);
 
 		/* Test case: [Duty: 80%] */
-		test_run(&pwms_dt[i], &gpios_dt[i], 80, true);
+		test_run(&pwms_dt[i], &gpios_dt[i], 80, true, i);
 	}
 }
 
@@ -242,17 +242,17 @@ ZTEST(pwm_gpio_loopback, test_pwm_cross)
 	/* Initial sweep with increasing duty cycles */
 	for (int i = 0; i < TEST_PWM_COUNT; i++) {
 		duty[i] = (i % duty_variations) * duty_step;
-		test_run(&pwms_dt[i], &gpios_dt[i], duty[i], true);
+		test_run(&pwms_dt[i], &gpios_dt[i], duty[i], true, i);
 	}
 
 	/* Repeat test with persistent config checks and rotated duty cycles */
 	for (int j = 1; j < duty_variations; j++) {
 		for (int i = 0; i < TEST_PWM_COUNT; i++) {
-			test_run(&pwms_dt[i], &gpios_dt[i], duty[i], false);
+			test_run(&pwms_dt[i], &gpios_dt[i], duty[i], false, i);
 		}
 		for (int i = 0; i < TEST_PWM_COUNT; i++) {
 			duty[i] = ((j + i) % duty_variations) * duty_step;
-			test_run(&pwms_dt[i], &gpios_dt[i], duty[i], true);
+			test_run(&pwms_dt[i], &gpios_dt[i], duty[i], true, i);
 		}
 	}
 }
@@ -261,11 +261,11 @@ ZTEST(pwm_gpio_loopback, test_pwm_cross)
 ZTEST(pwm_gpio_loopback, test_pwm_pm)
 {
 	/* Test case: [Duty: 100%] */
-	test_run(&pwms_dt[0], &gpios_dt[0], 100, true);
+	test_run(&pwms_dt[0], &gpios_dt[0], 100, true, 0);
 
 	for (int i = 1; i < TEST_PWM_COUNT; i++) {
 		/* Test case: [Duty: 75%] */
-		test_run(&pwms_dt[i], &gpios_dt[i], 75, true);
+		test_run(&pwms_dt[i], &gpios_dt[i], 75, true, i);
 	}
 
 	/* Set all channels, invoke sleep and check if they retain
@@ -275,11 +275,11 @@ ZTEST(pwm_gpio_loopback, test_pwm_pm)
 	k_sleep(K_SECONDS(1));
 
 	 /* Test case: [Duty: 100%] */
-	test_run(&pwms_dt[0], &gpios_dt[0], 100, false);
+	test_run(&pwms_dt[0], &gpios_dt[0], 100, false, 0);
 
 	for (int i = 1; i < TEST_PWM_COUNT; i++) {
 		/* Test case: [Duty: 75%] */
-		test_run(&pwms_dt[i], &gpios_dt[i], 75, false);
+		test_run(&pwms_dt[i], &gpios_dt[i], 75, false, i);
 	}
 }
 #endif
@@ -289,7 +289,7 @@ static void *pwm_gpio_loopback_setup(void)
 	for (int i = 0; i < TEST_GPIO_COUNT; i++) {
 		if (device_is_ready(gpios_dt[i].port)) {
 			/* Configure GPIO pin for edge detection */
-			config_gpio(&gpios_dt[i]);
+			config_gpio(&gpios_dt[i], i);
 		} else {
 			TC_PRINT("GPIO device %s is not ready", gpios_dt[i].port->name);
 		}
