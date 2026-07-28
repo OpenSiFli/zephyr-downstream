@@ -16,4 +16,6 @@ supported:
   - bluetooth
   - audio
   - rtc
+  - crc
+  - pwm
 vendor: sifli
