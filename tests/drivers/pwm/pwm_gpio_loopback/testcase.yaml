@@ -7,6 +7,11 @@ common:
   harness_config:
     fixture: gpio_loopback
 tests:
+  drivers.pwm.gpio_loopback.sf32lb52:
+    platform_allow:
+      - sf32lb52_devkit_lcd
+    extra_args:
+      - DTC_OVERLAY_FILE="boards/sf32lb52_devkit_lcd.overlay"
   drivers.pwm.gpio_loopback.esp:
     platform_allow:
       - esp32_devkitc/esp32/procpu

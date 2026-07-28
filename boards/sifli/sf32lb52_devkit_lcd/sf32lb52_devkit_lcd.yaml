@@ -18,4 +18,6 @@ supported:
   - rtc
   - crc
   - pwm
+  - spi
+  - adc
 vendor: sifli
