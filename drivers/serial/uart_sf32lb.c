@@ -594,7 +594,7 @@ static int uart_async_sf32lb_rx_disable(const struct device *dev)
 {
 	const struct uart_sf32lb_config *config = dev->config;
 	struct uart_sf32lb_data *data = dev->data;
-	unsigned int key;
+	unsigned int key = 0;
 	struct dma_status dma_stat;
 	int err;
 	struct uart_event evt = {0};
@@ -715,7 +715,7 @@ static int uart_async_sf32lb_tx_abort(const struct device *dev)
 	struct uart_event evt = {0};
 	struct dma_status dma_stat;
 	int err;
-	unsigned int key;
+	unsigned int key = 0;
 
 	sf32lb_dma_get_status_dt(&config->tx_dma, &dma_stat);
 	if (dma_stat.busy) {
