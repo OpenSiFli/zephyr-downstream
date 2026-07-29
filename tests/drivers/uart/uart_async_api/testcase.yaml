@@ -3,7 +3,7 @@ common:
     - stamp_c3
     - wio_terminal
     - xiao_esp32c3
-    - sf32lb52_devkit_lcd  # <--- 在这里添加 sf32lb52 板子名称
+    - sf32lb52_devkit_lcd  
   tags:
     - drivers
     - uart

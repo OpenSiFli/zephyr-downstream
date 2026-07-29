@@ -5,10 +5,10 @@ tests:
     filter: CONFIG_SERIAL_SUPPORT_INTERRUPT
     vendor_allow:
       - adi
-      - sifli   # 添加SiFli厂商的允许列表
+      - sifli   
 
-    harness: console  # <--- 使用 console harness
-    harness_config:   # <--- 配置控制台匹配规则
-      type: one_line  # 逐行匹配
-      regex:          # 匹配包含 "This is a FIFO test." 的行
+    harness: console  
+    harness_config:  
+      type: one_line  
+      regex:          
         - "This is a FIFO test."
