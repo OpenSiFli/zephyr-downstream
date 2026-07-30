@@ -8,7 +8,6 @@ tests:
     depends_on: memc
     integration_platforms:
       - sam4s_xplained
-      - sf32lb52_devkit_lcd
     extra_args:
       - platform:da1469x_dk_pro/da14699:EXTRA_DTC_OVERLAY_FILE="da1469x_dk_pro_psram.overlay"
       - platform:da14695_dk_usb/da14695:EXTRA_DTC_OVERLAY_FILE="da14695_dk_usb_psram.overlay"
@@ -26,3 +25,16 @@ tests:
       - platform:b_u585i_iot02a:EXTRA_CONF_FILE=boards/b_u585i_iot02a_mspi_aps6408l.conf
       - platform:stm32h7s78_dk:CONF_FILE=boards/stm32h7s78_dk_mspi_psram.conf
       - platform:stm32h7s78_dk:DTC_OVERLAY_FILE=boards/stm32h7s78_dk_mspi_psram.overlay
+
+  drivers.memc.ram.sf32lb:
+    tags: 
+      - drivers
+      - memc
+
+    platform_allow:
+      - sf32lb52_devkit_lcd
+    extra_args:
+      - platform:sf32lb52_devkit_lcd:DTC_OVERLAY_FILE=boards/sf32lb52_devkit_lcd.overlay
+      - platform:sf32lb52_devkit_lcd:EXTRA_CONF_FILE=boards/sf32lb52_devkit_lcd.conf
+
+
