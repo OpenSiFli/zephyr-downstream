@@ -12,9 +12,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/clock_control.h>
 
-#include <register.h>
-
-#define HPSYS_AON_ACR offsetof(HPSYS_AON_TypeDef, ACR)
+#include <ll_hpsys_aon.h>
 
 struct clock_control_sf32lb_hxt48_config {
 	uintptr_t aon;
@@ -24,15 +22,13 @@ struct clock_control_sf32lb_hxt48_config {
 static int clock_control_sf32lb_hxt48_on(const struct device *dev, clock_control_subsys_t sys)
 {
 	const struct clock_control_sf32lb_hxt48_config *config = dev->config;
-	uint32_t val;
+	HPSYS_AON_TypeDef *aon = (HPSYS_AON_TypeDef *)config->aon;
 
 	ARG_UNUSED(sys);
 
-	val = sys_read32(config->aon + HPSYS_AON_ACR);
-	val |= HPSYS_AON_ACR_HXT48_REQ;
-	sys_write32(val, config->aon + HPSYS_AON_ACR);
+	ll_aon_hxt48_req_set(aon, LL_AON_PM_ACTIVE);
 
-	while (sys_test_bit(config->aon + HPSYS_AON_ACR, HPSYS_AON_ACR_HXT48_RDY_Pos) == 0U) {
+	while (!ll_aon_hxt48_is_ready(aon)) {
 	}
 
 	return 0;
@@ -41,13 +37,11 @@ static int clock_control_sf32lb_hxt48_on(const struct device *dev, clock_control
 static int clock_control_sf32lb_hxt48_off(const struct device *dev, clock_control_subsys_t sys)
 {
 	const struct clock_control_sf32lb_hxt48_config *config = dev->config;
-	uint32_t val;
+	HPSYS_AON_TypeDef *aon = (HPSYS_AON_TypeDef *)config->aon;
 
 	ARG_UNUSED(sys);
 
-	val = sys_read32(config->aon + HPSYS_AON_ACR);
-	val &= ~HPSYS_AON_ACR_HXT48_REQ;
-	sys_write32(val, config->aon + HPSYS_AON_ACR);
+	ll_aon_hxt48_req_clear(aon, LL_AON_PM_ACTIVE);
 
 	return 0;
 }
@@ -56,10 +50,11 @@ static enum clock_control_status clock_control_sf32lb_hxt48_get_status(const str
 								       clock_control_subsys_t sys)
 {
 	const struct clock_control_sf32lb_hxt48_config *config = dev->config;
+	HPSYS_AON_TypeDef *aon = (HPSYS_AON_TypeDef *)config->aon;
 
 	ARG_UNUSED(sys);
 
-	if (sys_test_bit(config->aon + HPSYS_AON_ACR, HPSYS_AON_ACR_HXT48_RDY_Pos) != 0U) {
+	if (ll_aon_hxt48_is_ready(aon) != 0U) {
 		return CLOCK_CONTROL_STATUS_ON;
 	}
 
