@@ -11,19 +11,14 @@
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/logging/log.h>
 
-#include <register.h>
-
-#define TSEN_CTRL_REG offsetof(TSEN_TypeDef, TSEN_CTRL_REG)
-#define TSEN_RDATA    offsetof(TSEN_TypeDef, TSEN_RDATA)
-#define TSEN_IRQ      offsetof(TSEN_TypeDef, TSEN_IRQ)
-
-#define SYS_CFG_ANAU_CR offsetof(HPSYS_CFG_TypeDef, ANAU_CR)
+#include <ll_hpsys_cfg.h>
+#include <ll_tsen.h>
 
 LOG_MODULE_REGISTER(sf32lb_tsen, CONFIG_SENSOR_LOG_LEVEL);
 
 struct sf32lb_tsen_config {
-	uintptr_t base;
-	uintptr_t cfg_base;
+	TSEN_TypeDef *tsen;
+	HPSYS_CFG_TypeDef *cfg;
 	struct sf32lb_clock_dt_spec clock;
 };
 
@@ -39,13 +34,13 @@ static int sf32lb_tsen_sample_fetch(const struct device *dev, enum sensor_channe
 
 	k_mutex_lock(&data->mutex, K_FOREVER);
 
-	while (!sys_test_bit(config->base + TSEN_IRQ, TSEN_TSEN_IRQ_TSEN_IRSR_Pos)) {
+	while (!ll_tsen_get_interrupt_raw(config->tsen)) {
 		k_msleep(1);
 	}
 
-	data->last_temp = sys_read32(config->base + TSEN_RDATA);
+	data->last_temp = ll_tsen_read_data(config->tsen);
 
-	sys_set_bit(config->base + TSEN_IRQ, TSEN_TSEN_IRQ_TSEN_ICR_Pos);
+	ll_tsen_clear_interrupt(config->tsen);
 
 	k_mutex_unlock(&data->mutex);
 
@@ -87,16 +82,14 @@ static int sf32lb_tsen_init(const struct device *dev)
 		return ret;
 	}
 
-	if (!sys_test_bit(config->cfg_base + SYS_CFG_ANAU_CR, HPSYS_CFG_ANAU_CR_EN_BG_Pos)) {
-		sys_set_bit(config->cfg_base + SYS_CFG_ANAU_CR, HPSYS_CFG_ANAU_CR_EN_BG_Pos);
-	}
+	ll_cfg_anau_bandgap_enable(config->cfg);
 
-	sys_clear_bit(config->base + TSEN_CTRL_REG, TSEN_TSEN_CTRL_REG_ANAU_TSEN_RSTB_Pos);
-	sys_set_bit(config->base + TSEN_CTRL_REG, TSEN_TSEN_CTRL_REG_ANAU_TSEN_EN_Pos);
-	sys_set_bit(config->base + TSEN_CTRL_REG, TSEN_TSEN_CTRL_REG_ANAU_TSEN_PU_Pos);
-	sys_set_bit(config->base + TSEN_CTRL_REG, TSEN_TSEN_CTRL_REG_ANAU_TSEN_RSTB_Pos);
+	ll_tsen_assert_reset(config->tsen);
+	ll_tsen_enable(config->tsen);
+	ll_tsen_power_up(config->tsen);
+	ll_tsen_release_reset(config->tsen);
 	k_busy_wait(20);
-	sys_set_bit(config->base + TSEN_CTRL_REG, TSEN_TSEN_CTRL_REG_ANAU_TSEN_RUN_Pos);
+	ll_tsen_start(config->tsen);
 
 	k_mutex_init(&data->mutex);
 
@@ -106,8 +99,8 @@ static int sf32lb_tsen_init(const struct device *dev)
 #define SF32LB_TSEN_DEFINE(inst)                                                                   \
 	static struct sf32lb_tsen_data sf32lb_tsen_data_##inst;                                    \
 	static const struct sf32lb_tsen_config sf32lb_tsen_config_##inst = {                       \
-		.base = DT_INST_REG_ADDR(inst),                                                    \
-		.cfg_base = DT_REG_ADDR(DT_INST_PHANDLE(inst, sifli_cfg)),                         \
+		.tsen = (TSEN_TypeDef *)DT_INST_REG_ADDR(inst),                                       \
+		.cfg = (HPSYS_CFG_TypeDef *)DT_REG_ADDR(DT_INST_PHANDLE(inst, sifli_cfg)),           \
 		.clock = SF32LB_CLOCK_DT_INST_SPEC_GET(inst),                                      \
 	};                                                                                         \
 	SENSOR_DEVICE_DT_INST_DEFINE(inst, sf32lb_tsen_init, NULL, &sf32lb_tsen_data_##inst,       \
