@@ -23,6 +23,8 @@ manifest:
       url-base: https://github.com/zephyrproject-rtos
     - name: babblesim
       url-base: https://github.com/BabbleSim
+    - name: opensifli
+      url-base: https://github.com/OpenSiFli
 
   group-filter: [-babblesim, -optional, -testing]
 
@@ -243,7 +245,9 @@ manifest:
       groups:
         - hal
     - name: hal_sifli
-      revision: 4881cabb0f1d65504b07e2464fab3de7f3828b16
+      remote: opensifli
+      repo-path: zephyr-hal_sifli-downstream
+      revision: ed01c7cd96aa70e61d353dfdee0cb3ba7c34a24e
       path: modules/hal/sifli
       groups:
         - hal
