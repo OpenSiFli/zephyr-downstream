@@ -446,6 +446,10 @@ class DeviceHandler(Handler):
         while not ser.isOpen():
             time.sleep(0.1)
 
+        ser.rts=True
+        time.sleep(0.1)
+        ser.rts=False
+
         # Clear serial leftover.
         ser.reset_input_buffer()
 

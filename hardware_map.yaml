@@ -3,7 +3,7 @@
   platform: sf32lb52_devkit_lcd
   product: SF32LB52 DevKit LCD
   runner: sftool
-  serial: COM28
+  serial: COM37
   baud: 1000000
   flash_before: true
   fixtures:
