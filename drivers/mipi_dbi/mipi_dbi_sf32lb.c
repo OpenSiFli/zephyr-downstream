@@ -15,36 +15,9 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
 
-#include <register.h>
+#include <ll_lcdc.h>
 
 LOG_MODULE_REGISTER(mipi_dbi_sf32lb, CONFIG_MIPI_DBI_LOG_LEVEL);
-
-#define LCD_COMMAND     offsetof(LCD_IF_TypeDef, COMMAND)
-#define LCD_IRQ         offsetof(LCD_IF_TypeDef, IRQ)
-#define LCDC_SETTING    offsetof(LCD_IF_TypeDef, SETTING)
-#define LCD_CANVAS_TL_POS offsetof(LCD_IF_TypeDef, CANVAS_TL_POS)
-#define LCD_CANVAS_BR_POS offsetof(LCD_IF_TypeDef, CANVAS_BR_POS)
-#define LCD_CANVAS_BG   offsetof(LCD_IF_TypeDef, CANVAS_BG)
-#define LCD_LAYER0_CONFIG offsetof(LCD_IF_TypeDef, LAYER0_CONFIG)
-#define LCD_LAYER0_TL_POS offsetof(LCD_IF_TypeDef, LAYER0_TL_POS)
-#define LCD_LAYER0_BR_POS offsetof(LCD_IF_TypeDef, LAYER0_BR_POS)
-#define LCD_LAYER0_FILTER offsetof(LCD_IF_TypeDef, LAYER0_FILTER)
-#define LCD_LAYER0_SRC  offsetof(LCD_IF_TypeDef, LAYER0_SRC)
-#define LCD_LAYER0_FILL offsetof(LCD_IF_TypeDef, LAYER0_FILL)
-#define LCD_CONF        offsetof(LCD_IF_TypeDef, LCD_CONF)
-#define LCD_IF_CONF     offsetof(LCD_IF_TypeDef, LCD_IF_CONF)
-#define TE_CONF         offsetof(LCD_IF_TypeDef, TE_CONF)
-#define TE_CONF2        offsetof(LCD_IF_TypeDef, TE_CONF2)
-#define LCD_WR          offsetof(LCD_IF_TypeDef, LCD_WR)
-#define LCD_RD          offsetof(LCD_IF_TypeDef, LCD_RD)
-#define LCD_SINGLE      offsetof(LCD_IF_TypeDef, LCD_SINGLE)
-#define LCD_SPI_IF_CONF offsetof(LCD_IF_TypeDef, SPI_IF_CONF)
-#define LCD_STATUS      offsetof(LCD_IF_TypeDef, STATUS)
-
-#define LCD_INTF_SEL_DBI_TYPEB (0U)
-#define LCD_INTF_SEL_SPI       (1U)
-#define LCD_INTF_SEL_JDI       (4U)
-#define LCD_INTF_SEL_DBI_TYPEA (6U)
 
 #define SF32LB_QSPI_CMD_WRITE 0x02U
 #define SF32LB_QSPI_CMD_READ  0x03U
@@ -61,7 +34,7 @@ LOG_MODULE_REGISTER(mipi_dbi_sf32lb, CONFIG_MIPI_DBI_LOG_LEVEL);
 	 LCD_IF_IRQ_ICB_OF_RAW_STAT)
 
 struct dbi_sf32lb_config {
-	uintptr_t base;
+	LCD_IF_TypeDef *lcd;
 	const struct pinctrl_dev_config *pincfg;
 	struct sf32lb_clock_dt_spec clock;
 	void (*irq_config_func)(const struct device *dev);
@@ -118,7 +91,7 @@ static void mipi_dbi_sf32lb_finish_transfer(const struct device *dev, int status
 	const struct dbi_sf32lb_config *config = dev->config;
 	struct dbi_sf32lb_data *data = dev->data;
 
-	sys_clear_bits(config->base + LCDC_SETTING, LCD_IF_SETTING_EOF_MASK);
+	ll_lcdc_disable_interrupt(config->lcd, LCD_IF_SETTING_EOF_MASK);
 
 	if (!data->transfer_pending) {
 		return;
@@ -134,12 +107,13 @@ static void mipi_dbi_sf32lb_isr(const struct device *dev)
 	const struct dbi_sf32lb_config *config = dev->config;
 	uint32_t irq;
 
-	irq = sys_read32(config->base + LCD_IRQ);
+	irq = ll_lcdc_get_interrupt_status(config->lcd) |
+	      (ll_lcdc_get_interrupt_raw(config->lcd) << LL_LCDC_IRQ_RAW_Pos);
 	if (irq == 0U) {
 		return;
 	}
 
-	sys_write32(irq, config->base + LCD_IRQ);
+	ll_lcdc_clear_interrupt_status(config->lcd, irq);
 
 	if ((irq & (LCD_IF_IRQ_ICB_OF_STAT | LCD_IF_IRQ_ICB_OF_RAW_STAT)) != 0U) {
 		LOG_ERR("LCDC ICB overflow during display transfer");
@@ -153,8 +127,7 @@ static inline void wait_busy(const struct device *dev)
 {
 	const struct dbi_sf32lb_config *config = dev->config;
 
-	while (sys_test_bit(config->base + LCD_SINGLE, LCD_IF_LCD_SINGLE_LCD_BUSY_Pos) ||
-	       sys_test_bit(config->base + LCD_STATUS, LCD_IF_STATUS_LCD_BUSY_Pos)) {
+	while (ll_lcdc_is_single_busy(config->lcd) || ll_lcdc_is_busy(config->lcd)) {
 	}
 }
 
@@ -165,10 +138,9 @@ static void mipi_dbi_sf32lb_spi_sequence(const struct device *dev, bool end)
 	wait_busy(dev);
 
 	if (end) {
-		sys_set_bit(config->base + LCD_SPI_IF_CONF, LCD_IF_SPI_IF_CONF_SPI_CS_AUTO_DIS_Pos);
+		ll_lcdc_spi_cs_auto_dis_set(config->lcd);
 	} else {
-		sys_clear_bit(config->base + LCD_SPI_IF_CONF,
-			      LCD_IF_SPI_IF_CONF_SPI_CS_AUTO_DIS_Pos);
+		ll_lcdc_spi_cs_auto_dis_clear(config->lcd);
 	}
 }
 
@@ -176,27 +148,19 @@ static void mipi_dbi_sf32lb_send_single_cmd(const struct device *dev, uint32_t a
 					    uint32_t addr_len)
 {
 	const struct dbi_sf32lb_config *config = dev->config;
-	uint32_t spi_if_conf;
 
 	wait_busy(dev);
 
-	spi_if_conf = sys_read32(config->base + LCD_SPI_IF_CONF);
-	spi_if_conf &= ~(LCD_IF_SPI_IF_CONF_RD_LEN_Msk | LCD_IF_SPI_IF_CONF_SPI_RD_MODE_Msk |
-			 LCD_IF_SPI_IF_CONF_WR_LEN_Msk);
-
 	if ((addr_len > 0) && (addr_len <= 4)) {
-		spi_if_conf |= FIELD_PREP(LCD_IF_SPI_IF_CONF_WR_LEN_Msk, addr_len - 1);
-
-		sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
-		sys_write32(addr, config->base + LCD_WR);
-		sys_write32(SF32LB_SINGLE_WR, config->base + LCD_SINGLE);
+		ll_lcdc_spi_set_data_len(config->lcd, 0U, addr_len - 1U);
+		ll_lcdc_write_data(config->lcd, addr);
+		ll_lcdc_single_trigger(config->lcd, SF32LB_SINGLE_WR);
 	}
 }
 
 static void mipi_dbi_sf32lb_recv_single_data(const struct device *dev, uint8_t *buf, uint32_t len)
 {
 	const struct dbi_sf32lb_config *config = dev->config;
-	uint32_t spi_if_conf;
 	uint32_t data;
 
 	if (len == 0U) {
@@ -205,19 +169,13 @@ static void mipi_dbi_sf32lb_recv_single_data(const struct device *dev, uint8_t *
 
 	wait_busy(dev);
 
-	spi_if_conf = sys_read32(config->base + LCD_SPI_IF_CONF);
-	spi_if_conf &= ~(LCD_IF_SPI_IF_CONF_RD_LEN_Msk | LCD_IF_SPI_IF_CONF_SPI_RD_MODE_Msk |
-			 LCD_IF_SPI_IF_CONF_WR_LEN_Msk);
-
-	spi_if_conf |= FIELD_PREP(LCD_IF_SPI_IF_CONF_RD_LEN_Msk, len - 1U) |
-		       FIELD_PREP(LCD_IF_SPI_IF_CONF_SPI_RD_MODE_Msk, 1U);
-
-	sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
-	sys_write32(SF32LB_SINGLE_RD, config->base + LCD_SINGLE);
+	ll_lcdc_spi_set_data_len(config->lcd, len - 1U, 0U);
+	ll_lcdc_spi_set_read_mode(config->lcd, 1U);
+	ll_lcdc_single_trigger(config->lcd, SF32LB_SINGLE_RD);
 
 	wait_busy(dev);
 
-	data = sys_read32(config->base + LCD_RD);
+	data = ll_lcdc_read_data(config->lcd);
 
 	for (uint32_t i = 0U; i < len; i++) {
 		buf[i] = (uint8_t)(data >> (i * 8U));
@@ -238,7 +196,7 @@ static inline void wait_lcdc_single_busy(const struct device *dev)
 {
 	const struct dbi_sf32lb_config *config = dev->config;
 
-	while (sys_test_bit(config->base + LCD_SINGLE, LCD_IF_LCD_SINGLE_LCD_BUSY_Pos)) {
+	while (ll_lcdc_is_single_busy(config->lcd)) {
 	}
 }
 
@@ -246,21 +204,14 @@ static void mipi_dbi_sf32lb_write_bytes(const struct device *dev, uint32_t addr,
 					const uint8_t *buf, size_t len)
 {
 	const struct dbi_sf32lb_config *config = dev->config;
-	uint32_t spi_if_conf;
 
 	wait_busy(dev);
 
 	mipi_dbi_sf32lb_spi_sequence(dev, 0U == len);
 
-	spi_if_conf = sys_read32(config->base + LCD_SPI_IF_CONF);
-	spi_if_conf &= ~(LCD_IF_SPI_IF_CONF_RD_LEN_Msk | LCD_IF_SPI_IF_CONF_SPI_RD_MODE_Msk |
-			 LCD_IF_SPI_IF_CONF_WR_LEN_Msk);
-
-	spi_if_conf |= FIELD_PREP(LCD_IF_SPI_IF_CONF_WR_LEN_Msk, addr_len - 1U);
-
-	sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
-	sys_write32(addr, config->base + LCD_WR);
-	sys_write32(SF32LB_SINGLE_WR, config->base + LCD_SINGLE);
+	ll_lcdc_spi_set_data_len(config->lcd, 0U, addr_len - 1U);
+	ll_lcdc_write_data(config->lcd, addr);
+	ll_lcdc_single_trigger(config->lcd, SF32LB_SINGLE_WR);
 
 	size_t data_len = len;
 	size_t total_len = len;
@@ -280,13 +231,9 @@ static void mipi_dbi_sf32lb_write_bytes(const struct device *dev, uint32_t addr,
 		total_len -= l;
 		mipi_dbi_sf32lb_spi_sequence(dev, (0 == total_len));
 
-		spi_if_conf = sys_read32(config->base + LCD_SPI_IF_CONF);
-		spi_if_conf &= ~(LCD_IF_SPI_IF_CONF_WR_LEN_Msk);
-		spi_if_conf |= FIELD_PREP(LCD_IF_SPI_IF_CONF_WR_LEN_Msk, l - 1U);
-
-		sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
-		sys_write32(v, config->base + LCD_WR);
-		sys_write32(SF32LB_SINGLE_WD, config->base + LCD_SINGLE);
+		ll_lcdc_spi_set_data_len(config->lcd, 0U, l - 1U);
+		ll_lcdc_write_data(config->lcd, v);
+		ll_lcdc_single_trigger(config->lcd, SF32LB_SINGLE_WD);
 	}
 }
 
@@ -295,7 +242,6 @@ static int mipi_dbi_sf32lb_spi_set_frequency(const struct device *dev, uint32_t 
 	const struct dbi_sf32lb_config *config = dev->config;
 	uint32_t clk_div;
 	uint32_t lcdc_clk;
-	uint32_t spi_if_conf;
 	int ret;
 
 	if (freq == 0U) {
@@ -315,10 +261,7 @@ static int mipi_dbi_sf32lb_spi_set_frequency(const struct device *dev, uint32_t 
 		clk_div = LCD_IF_SPI_IF_CONF_CLK_DIV_Msk >> LCD_IF_SPI_IF_CONF_CLK_DIV_Pos;
 	}
 
-	spi_if_conf = sys_read32(config->base + LCD_SPI_IF_CONF);
-	spi_if_conf &= ~LCD_IF_SPI_IF_CONF_CLK_DIV_Msk;
-	spi_if_conf |= FIELD_PREP(LCD_IF_SPI_IF_CONF_CLK_DIV_Msk, clk_div);
-	sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
+	ll_lcdc_spi_set_clock_div(config->lcd, clk_div);
 
 	return 0;
 }
@@ -328,20 +271,12 @@ static int mipi_dbi_sf32lb_set_qspi_output_format(const struct device *dev,
 {
 	const struct dbi_sf32lb_config *config = dev->config;
 	uint8_t color_coding = dbi_config->color_coding & 0xF0U;
-	uint32_t lcd_conf;
 
 	if (color_coding != MIPI_DBI_MODE_RGB565) {
 		return -ENOTSUP;
 	}
 
-	lcd_conf = sys_read32(config->base + LCD_CONF);
-	lcd_conf &= ~(LCD_IF_LCD_CONF_LCD_FORMAT_Msk | LCD_IF_LCD_CONF_AHB_FORMAT_Msk |
-		      LCD_IF_LCD_CONF_SPI_LCD_FORMAT_Msk | LCD_IF_LCD_CONF_DPI_LCD_FORMAT_Msk |
-		      LCD_IF_LCD_CONF_JDI_SER_FORMAT_Msk | LCD_IF_LCD_CONF_ENDIAN_Msk);
-	lcd_conf |= FIELD_PREP(LCD_IF_LCD_CONF_SPI_LCD_FORMAT_Msk, 1U) |
-		    FIELD_PREP(LCD_IF_LCD_CONF_DPI_LCD_FORMAT_Msk, 1U) |
-		    LCD_IF_LCD_CONF_LCD_FORMAT_RGB565;
-	sys_write32(lcd_conf, config->base + LCD_CONF);
+	ll_lcdc_set_output_format(config->lcd, 1U, 1U, 3U, 0U);
 
 	return 0;
 }
@@ -353,7 +288,6 @@ static int mipi_dbi_sf32lb_freq_config(const struct device *dev,
 	uint32_t freq = dbi_config->config.frequency;
 	uint32_t lcdc_clk;
 	uint32_t pw, pwl, pwh;
-	uint32_t lcd_if_conf;
 	int ret;
 
 	ret = sf32lb_clock_control_get_rate_dt(&config->clock, &lcdc_clk);
@@ -380,11 +314,7 @@ static int mipi_dbi_sf32lb_freq_config(const struct device *dev,
 		pwh = FIELD_GET(LCD_IF_LCD_IF_CONF_PWH_Msk, LCD_IF_LCD_IF_CONF_PWH_Msk);
 	}
 
-	lcd_if_conf = sys_read32(config->base + LCD_IF_CONF);
-	lcd_if_conf &= ~(LCD_IF_LCD_IF_CONF_PWL_Msk | LCD_IF_LCD_IF_CONF_PWH_Msk);
-	lcd_if_conf |= FIELD_PREP(LCD_IF_LCD_IF_CONF_PWL_Msk, pwl) |
-		       FIELD_PREP(LCD_IF_LCD_IF_CONF_PWH_Msk, pwh);
-	sys_write32(lcd_if_conf, config->base + LCD_IF_CONF);
+	ll_lcdc_set_bus_pwl_pwh(config->lcd, pwl, pwh);
 
 	return ret;
 }
@@ -398,7 +328,7 @@ static int mipi_dbi_sf32lb_spi_config(const struct device *dev,
 	uint32_t spi_if_conf = 0;
 	uint32_t freq = dbi_config->config.frequency;
 
-	sys_clear_bits(config->base + LCD_SPI_IF_CONF, LCD_IF_SPI_IF_CONF_CLK_DIV);
+	ll_lcdc_spi_set_clock_div(config->lcd, 0U);
 
 	spi_if_conf = LCD_IF_SPI_IF_CONF_SPI_CS_AUTO_DIS | LCD_IF_SPI_IF_CONF_SPI_CLK_AUTO_DIS |
 		      LCD_IF_SPI_IF_CONF_SPI_CS_NO_IDLE;
@@ -421,7 +351,7 @@ static int mipi_dbi_sf32lb_spi_config(const struct device *dev,
 		spi_if_conf |= LCD_IF_SPI_IF_CONF_SPI_CLK_POL;
 	}
 
-	sys_write32(spi_if_conf, config->base + LCD_SPI_IF_CONF);
+	ll_lcdc_spi_set_bus_config(config->lcd, spi_if_conf);
 
 	return mipi_dbi_sf32lb_spi_set_frequency(dev, freq);
 }
@@ -432,34 +362,26 @@ static int mipi_dbi_sf32lb_configure(const struct device *dev,
 	const struct dbi_sf32lb_config *config = dev->config;
 	struct dbi_sf32lb_data *data = dev->data;
 	uint8_t bus_type = dbi_config->mode & 0xFU;
-	uint32_t lcd_conf;
-	uint32_t lcd_if_conf;
 	int ret;
 
 	if (dbi_config == data->active_config) {
 		return 0;
 	}
 
-	lcd_conf = sys_read32(config->base + LCD_CONF);
-	lcd_conf &= ~(LCD_IF_LCD_CONF_LCD_INTF_SEL_Msk | LCD_IF_LCD_CONF_TARGET_LCD_Msk);
-
 	switch (bus_type) {
 	case MIPI_DBI_MODE_8080_BUS_16_BIT:
 	case MIPI_DBI_MODE_8080_BUS_9_BIT:
 	case MIPI_DBI_MODE_8080_BUS_8_BIT:
-		lcd_conf |= FIELD_PREP(LCD_IF_LCD_CONF_LCD_INTF_SEL_Msk, LCD_INTF_SEL_DBI_TYPEB);
-		lcd_conf |= FIELD_PREP(LCD_IF_LCD_CONF_TARGET_LCD_Msk, 0U);
-		lcd_if_conf = sys_read32(config->base + LCD_IF_CONF);
-		lcd_if_conf &= ~(LCD_IF_LCD_IF_CONF_TAS_Msk | LCD_IF_LCD_IF_CONF_TAH_Msk);
-		lcd_if_conf |= FIELD_PREP(LCD_IF_LCD_IF_CONF_TAS_Msk, 1U) |
-			       FIELD_PREP(LCD_IF_LCD_IF_CONF_TAH_Msk, 1U);
-		sys_write32(lcd_if_conf, config->base + LCD_IF_CONF);
+		ll_lcdc_set_interface_mode(config->lcd, LL_LCDC_IF_MODE_8080);
+		ll_lcdc_set_target_lcd(config->lcd, LL_LCDC_TARGET_PANEL0);
+		ll_lcdc_set_bus_tas_tah(config->lcd, 1U, 1U);
 		mipi_dbi_sf32lb_freq_config(dev, dbi_config);
 		break;
 
 	case MIPI_DBI_MODE_SPI_3WIRE:
 	case MIPI_DBI_MODE_QSPI:
-		lcd_conf |= FIELD_PREP(LCD_IF_LCD_CONF_LCD_INTF_SEL_Msk, LCD_INTF_SEL_SPI);
+		ll_lcdc_set_interface_mode(config->lcd, LL_LCDC_IF_MODE_SPI);
+		ll_lcdc_set_target_lcd(config->lcd, LL_LCDC_TARGET_PANEL0);
 		ret = mipi_dbi_sf32lb_spi_config(dev, dbi_config);
 		if (ret < 0) {
 			return ret;
@@ -470,7 +392,6 @@ static int mipi_dbi_sf32lb_configure(const struct device *dev,
 		return -EINVAL;
 	}
 
-	sys_write32(lcd_conf, config->base + LCD_CONF);
 	if (bus_type == MIPI_DBI_MODE_QSPI) {
 		ret = mipi_dbi_sf32lb_set_qspi_output_format(dev, dbi_config);
 		if (ret < 0) {
@@ -489,9 +410,9 @@ static int mipi_dbi_reset_sf32lb(const struct device *dev, k_timeout_t delay)
 	uint32_t delay_ms = k_ticks_to_ms_ceil32(delay.ticks);
 
 	k_mutex_lock(&data->lock, K_FOREVER);
-	sys_clear_bit(config->base + LCD_IF_CONF, LCD_IF_LCD_IF_CONF_LCD_RSTB_Pos);
+	ll_lcdc_set_lcd_reset_pin(config->lcd, 1U);
 	k_msleep(delay_ms);
-	sys_set_bit(config->base + LCD_IF_CONF, LCD_IF_LCD_IF_CONF_LCD_RSTB_Pos);
+	ll_lcdc_set_lcd_reset_pin(config->lcd, 0U);
 	k_mutex_unlock(&data->lock);
 
 	return 0;
@@ -503,16 +424,16 @@ static int mipi_dbi_sf32lb_8080_cmd_write_bytes(const struct device *dev, uint8_
 	const struct dbi_sf32lb_config *config = dev->config;
 
 	wait_busy(dev);
-	sys_write32(cmd, config->base + LCD_WR);
-	sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG, config->base + LCD_SINGLE);
+	ll_lcdc_write_data(config->lcd, cmd);
+	ll_lcdc_single_trigger(config->lcd, LCD_IF_LCD_SINGLE_WR_TRIG);
 
 	while (data_len > 0) {
 		uint8_t v = *data;
 
 		wait_busy(dev);
-		sys_write32(v, config->base + LCD_WR);
-		sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE,
-			    config->base + LCD_SINGLE);
+		ll_lcdc_write_data(config->lcd, v);
+		ll_lcdc_single_trigger(config->lcd,
+				       LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE);
 
 		data_len--;
 		data++;
@@ -581,8 +502,8 @@ static int mipi_dbi_sf32lb_8080_cmd_read_bytes(const struct device *dev, uint8_t
 
 	while (num_cmds > 0) {
 		wait_busy(dev);
-		sys_write32(*cmd, config->base + LCD_WR);
-		sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG, config->base + LCD_SINGLE);
+		ll_lcdc_write_data(config->lcd, *cmd);
+		ll_lcdc_single_trigger(config->lcd, LCD_IF_LCD_SINGLE_WR_TRIG);
 
 		num_cmds--;
 		cmd++;
@@ -590,10 +511,10 @@ static int mipi_dbi_sf32lb_8080_cmd_read_bytes(const struct device *dev, uint8_t
 
 	while (data_len > 0) {
 		wait_busy(dev);
-		sys_write32(LCD_IF_LCD_SINGLE_RD_TRIG, config->base + LCD_SINGLE);
+		ll_lcdc_single_trigger(config->lcd, LCD_IF_LCD_SINGLE_RD_TRIG);
 
 		wait_busy(dev);
-		*data = sys_read8(config->base + LCD_RD);
+		*data = (uint8_t)ll_lcdc_read_data(config->lcd);
 
 		data_len--;
 		data++;
@@ -662,8 +583,8 @@ static int mipi_dbi_sf32lb_wait_transfer_done(const struct device *dev)
 
 	ret = k_sem_take(&data->transfer_done, K_MSEC(SF32LB_QSPI_LAYER_TIMEOUT_MS));
 	if (ret < 0) {
-		sys_clear_bits(config->base + LCDC_SETTING, LCD_IF_SETTING_EOF_MASK);
-		sys_write32(SF32LB_LCDC_TRANSFER_IRQS, config->base + LCD_IRQ);
+		ll_lcdc_disable_interrupt(config->lcd, LCD_IF_SETTING_EOF_MASK);
+		ll_lcdc_clear_interrupt_status(config->lcd, SF32LB_LCDC_TRANSFER_IRQS);
 		data->transfer_pending = false;
 		return -ETIMEDOUT;
 	}
@@ -680,8 +601,6 @@ static int mipi_dbi_sf32lb_program_rgb565_layer(const struct device *dev,
 	const struct dbi_sf32lb_config *config = dev->config;
 	uint64_t min_buf_size;
 	uint32_t layer_line_bytes;
-	uint32_t layer_config;
-	uint32_t canvas_bg;
 	uint32_t x1;
 	uint32_t y1;
 	uint32_t max_x = LCD_IF_LAYER0_BR_POS_X1_Msk >> LCD_IF_LAYER0_BR_POS_X1_Pos;
@@ -715,33 +634,18 @@ static int mipi_dbi_sf32lb_program_rgb565_layer(const struct device *dev,
 
 	wait_busy(dev);
 
-	canvas_bg = sys_read32(config->base + LCD_CANVAS_BG);
-	canvas_bg &= ~(LCD_IF_CANVAS_BG_RED_Msk | LCD_IF_CANVAS_BG_GREEN_Msk |
-		       LCD_IF_CANVAS_BG_BLUE_Msk);
-	sys_write32(canvas_bg, config->base + LCD_CANVAS_BG);
+	ll_lcdc_set_canvas_bg(config->lcd, 0U, 0U, 0U);
 
-	sys_write32(FIELD_PREP(LCD_IF_CANVAS_TL_POS_X0_Msk, x0) |
-		    FIELD_PREP(LCD_IF_CANVAS_TL_POS_Y0_Msk, y0),
-		    config->base + LCD_CANVAS_TL_POS);
-	sys_write32(FIELD_PREP(LCD_IF_CANVAS_BR_POS_X1_Msk, x1) |
-		    FIELD_PREP(LCD_IF_CANVAS_BR_POS_Y1_Msk, y1),
-		    config->base + LCD_CANVAS_BR_POS);
+	ll_lcdc_set_canvas_pos(config->lcd, x0, y0, x1, y1);
 
-	layer_config = LCD_IF_LAYER0_CONFIG_FORMAT_RGB565 |
-		       FIELD_PREP(LCD_IF_LAYER0_CONFIG_ALPHA_Msk, 255U) |
-		       FIELD_PREP(LCD_IF_LAYER0_CONFIG_WIDTH_Msk, layer_line_bytes) |
-		       LCD_IF_LAYER0_CONFIG_PREFETCH_EN | LCD_IF_LAYER0_CONFIG_ACTIVE;
+	ll_lcdc_layer_config(config->lcd, 0U, LL_LCDC_FORMAT_RGB565, 255U, layer_line_bytes, 0U);
+	ll_lcdc_layer_set_prefetch(config->lcd, 0U, 1U);
+	ll_lcdc_layer_set_active(config->lcd, 0U, 1U);
 
-	sys_write32(layer_config, config->base + LCD_LAYER0_CONFIG);
-	sys_write32(FIELD_PREP(LCD_IF_LAYER0_TL_POS_X0_Msk, x0) |
-		    FIELD_PREP(LCD_IF_LAYER0_TL_POS_Y0_Msk, y0),
-		    config->base + LCD_LAYER0_TL_POS);
-	sys_write32(FIELD_PREP(LCD_IF_LAYER0_BR_POS_X1_Msk, x1) |
-		    FIELD_PREP(LCD_IF_LAYER0_BR_POS_Y1_Msk, y1),
-		    config->base + LCD_LAYER0_BR_POS);
-	sys_write32(0U, config->base + LCD_LAYER0_FILTER);
-	sys_write32(mipi_dbi_sf32lb_bus_address(framebuf), config->base + LCD_LAYER0_SRC);
-	sys_write32(byte_swap ? LCD_IF_LAYER0_FILL_ENDIAN : 0U, config->base + LCD_LAYER0_FILL);
+	ll_lcdc_layer_set_position(config->lcd, 0U, x0, y0, x1, y1);
+	ll_lcdc_layer_set_filter(config->lcd, 0U, 0U);
+	ll_lcdc_layer_set_src(config->lcd, 0U, mipi_dbi_sf32lb_bus_address(framebuf));
+	ll_lcdc_layer_set_fill(config->lcd, 0U, byte_swap ? LCD_IF_LAYER0_FILL_ENDIAN : 0U);
 
 	return 0;
 }
@@ -767,11 +671,11 @@ static int mipi_dbi_sf32lb_qspi_send_layer(const struct device *dev, uint32_t ad
 
 	k_sem_reset(&data->transfer_done);
 	data->transfer_status = 0;
-	sys_write32(SF32LB_LCDC_TRANSFER_IRQS, config->base + LCD_IRQ);
+	ll_lcdc_clear_interrupt_status(config->lcd, SF32LB_LCDC_TRANSFER_IRQS);
 
 	data->transfer_pending = true;
-	sys_set_bits(config->base + LCDC_SETTING, LCD_IF_SETTING_EOF_MASK);
-	sys_write32(LCD_IF_COMMAND_START, config->base + LCD_COMMAND);
+	ll_lcdc_enable_interrupt(config->lcd, LCD_IF_SETTING_EOF_MASK);
+	ll_lcdc_start(config->lcd);
 
 	return mipi_dbi_sf32lb_wait_transfer_done(dev);
 }
@@ -872,15 +776,15 @@ static int mipi_dbi_write_display_sf32lb(const struct device *dev,
 		if (bus_type == MIPI_DBI_MODE_8080_BUS_16_BIT && data_len >= 2) {
 			uint16_t v = sys_get_le16(buf);
 
-			sys_write32(v, config->base + LCD_WR);
-			sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE,
-				    config->base + LCD_SINGLE);
+			ll_lcdc_write_data(config->lcd, v);
+			ll_lcdc_single_trigger(config->lcd,
+					       LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE);
 			buf += 2;
 			data_len -= 2;
 		} else {
-			sys_write32(*buf, config->base + LCD_WR);
-			sys_write32(LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE,
-				    config->base + LCD_SINGLE);
+			ll_lcdc_write_data(config->lcd, *buf);
+			ll_lcdc_single_trigger(config->lcd,
+					       LCD_IF_LCD_SINGLE_WR_TRIG | LCD_IF_LCD_SINGLE_TYPE);
 			buf++;
 			data_len--;
 		}
@@ -899,7 +803,6 @@ static int mipi_dbi_configure_te_sf32lb(const struct device *dev, uint8_t edge, 
 	const struct dbi_sf32lb_config *config = dev->config;
 	struct dbi_sf32lb_data *data = dev->data;
 	uint32_t delay_us = k_ticks_to_us_ceil32(delay.ticks);
-	uint32_t te_conf;
 	uint32_t polarity;
 
 	if (edge == MIPI_DBI_TE_RISING_EDGE) {
@@ -910,13 +813,9 @@ static int mipi_dbi_configure_te_sf32lb(const struct device *dev, uint8_t edge, 
 		return -EINVAL;
 	}
 
-	te_conf = FIELD_PREP(LCD_IF_TE_CONF_ENABLE_Msk, 1) |
-		  FIELD_PREP(LCD_IF_TE_CONF_FMARK_POL_Msk, polarity) |
-		  FIELD_PREP(LCD_IF_TE_CONF_MODE_Msk, 0);
-
 	k_mutex_lock(&data->lock, K_FOREVER);
-	sys_write32(delay_us, config->base + TE_CONF2);
-	sys_write32(te_conf, config->base + TE_CONF);
+	ll_lcdc_te_set_delay(config->lcd, delay_us);
+	ll_lcdc_te_set_config(config->lcd, 1U, polarity, 0U);
 	k_mutex_unlock(&data->lock);
 
 	return 0;
@@ -954,10 +853,10 @@ static int mipi_dbi_init_sf32lb(const struct device *dev)
 		return err;
 	}
 
-	sys_set_bit(config->base + LCDC_SETTING, LCD_IF_SETTING_AUTO_GATE_EN_Pos);
-	sys_clear_bits(config->base + LCDC_SETTING, LCD_IF_SETTING_EOF_MASK);
-	sys_write32(SF32LB_LCDC_TRANSFER_IRQS, config->base + LCD_IRQ);
-	sys_set_bit(config->base + LCD_IF_CONF, LCD_IF_LCD_IF_CONF_LCD_RSTB_Pos);
+	ll_lcdc_enable_interrupt(config->lcd, LCD_IF_SETTING_AUTO_GATE_EN);
+	ll_lcdc_disable_interrupt(config->lcd, LCD_IF_SETTING_EOF_MASK);
+	ll_lcdc_clear_interrupt_status(config->lcd, SF32LB_LCDC_TRANSFER_IRQS);
+	ll_lcdc_set_lcd_reset_pin(config->lcd, 0U);
 	config->irq_config_func(dev);
 
 	return err;
@@ -975,7 +874,7 @@ static int mipi_dbi_init_sf32lb(const struct device *dev)
 	}                                                                                          \
                                                                                                    \
 	static const struct dbi_sf32lb_config dbi_sf32lb_config_##n = {                            \
-		.base = DT_REG_ADDR(DT_INST_PARENT(n)),                                            \
+		.lcd = (LCD_IF_TypeDef *)DT_REG_ADDR(DT_INST_PARENT(n)),                            \
 		.clock = SF32LB_CLOCK_DT_INST_PARENT_SPEC_GET(n),                                  \
 		.pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),                                       \
 		.irq_config_func = dbi_sf32lb_irq_config_func_##n,                                 \
