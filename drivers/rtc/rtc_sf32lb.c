@@ -13,21 +13,9 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/atomic.h>
 
-#include <register.h>
+#include <ll_rtc.h>
 
 LOG_MODULE_REGISTER(rtc_sf32lb, CONFIG_RTC_LOG_LEVEL);
-
-#define RTC_TIMER      offsetof(RTC_TypeDef, TR)
-#define RTC_DATER      offsetof(RTC_TypeDef, DR)
-#define RTC_CR         offsetof(RTC_TypeDef, CR)
-#define RTC_ISR        offsetof(RTC_TypeDef, ISR)
-#define RTC_PSCLR      offsetof(RTC_TypeDef, PSCLR)
-#define RTC_WUTR       offsetof(RTC_TypeDef, WUTR)
-#define RTC_ALRMTR     offsetof(RTC_TypeDef, ALRMTR)
-#define RTC_ALRMDR     offsetof(RTC_TypeDef, ALRMDR)
-
-#define SYS_CFG_RTC_TR offsetof(HPSYS_CFG_TypeDef, RTC_TR)
-#define SYS_CFG_RTC_DR offsetof(HPSYS_CFG_TypeDef, RTC_DR)
 
 /*
  * The RTC clock, CLK_RTC, can be configured to use the LXT32 (32.768 kHz) or
@@ -65,7 +53,7 @@ struct rtc_sf32lb_data {
 };
 
 struct rtc_sf32lb_config {
-	uintptr_t base;
+	RTC_TypeDef *rtc;
 	uintptr_t cfg;
 #ifdef CONFIG_RTC_ALARM
 	void (*irq_config_func)(void);
@@ -78,10 +66,9 @@ static void rtc_irq_handler(const struct device *dev)
 {
 	const struct rtc_sf32lb_config *config = dev->config;
 	struct rtc_sf32lb_data *data = dev->data;
-	uint32_t isr = sys_read32(config->base + RTC_ISR);
 
-	if (isr & RTC_ISR_ALRMF) {
-		sys_clear_bit(config->base + RTC_ISR, RTC_ISR_ALRMF_Pos);
+	if (ll_rtc_get_alarm_flag(config->rtc)) {
+		ll_rtc_clear_alarm_flag(config->rtc);
 
 		atomic_set_bit(data->is_pending, 0);
 
@@ -92,67 +79,35 @@ static void rtc_irq_handler(const struct device *dev)
 }
 #endif
 
-static inline int rtc_sf32lb_enter_init_mode(const struct device *dev)
-{
-	const struct rtc_sf32lb_config *config = dev->config;
-
-	sys_set_bit(config->base + RTC_ISR, RTC_ISR_INIT_Pos);
-
-	while (!sys_test_bit(config->base + RTC_ISR, RTC_ISR_INITF_Pos)) {
-	}
-
-	return 0;
-}
-
-static inline int rtc_sf32lb_exit_init_mode(const struct device *dev)
-{
-	const struct rtc_sf32lb_config *config = dev->config;
-
-	sys_clear_bit(config->base + RTC_ISR, RTC_ISR_INIT_Pos);
-
-	return 0;
-}
-
-static inline void rtc_sf32lb_wait_for_sync(const struct device *dev)
-{
-	const struct rtc_sf32lb_config *config = dev->config;
-
-	sys_clear_bit(config->base + RTC_ISR, RTC_ISR_RSF_Pos);
-
-	while (!sys_test_bit(config->base + RTC_ISR, RTC_ISR_RSF_Pos)) {
-	}
-}
-
 static int rtc_sf32lb_set_time(const struct device *dev, const struct rtc_time *timeptr)
 {
 	const struct rtc_sf32lb_config *config = dev->config;
-	uint32_t tr = 0;
-	uint32_t dr = 0;
+	uint32_t subsec;
+	uint8_t year;
 
+	/* Century bit is not covered by ll_rtc_set_date() */
 	if (timeptr->tm_year < 100) { /* 20th century */
-		dr |= RTC_DR_CB;
-		dr |= FIELD_PREP(RTC_DR_YT_Msk | RTC_DR_YU_Msk, bin2bcd(timeptr->tm_year));
+		year = (uint8_t)timeptr->tm_year;
 	} else {
-		dr |= FIELD_PREP(RTC_DR_YT_Msk | RTC_DR_YU_Msk, bin2bcd(timeptr->tm_year - 100));
+		year = (uint8_t)(timeptr->tm_year - 100);
 	}
 
-	tr = FIELD_PREP(RTC_TR_HT_Msk | RTC_TR_HU_Msk, bin2bcd(timeptr->tm_hour)) |
-	     FIELD_PREP(RTC_TR_MNT_Msk | RTC_TR_MNU_Msk, bin2bcd(timeptr->tm_min)) |
-	     FIELD_PREP(RTC_TR_ST_Msk | RTC_TR_SU_Msk, bin2bcd(timeptr->tm_sec)) |
-	     FIELD_PREP(RTC_TR_SS_Msk, timeptr->tm_nsec * RC10K_DIVA_FRAC / 1000000000U);
-
-	dr |= FIELD_PREP(RTC_DR_MT_Msk | RTC_DR_MU_Msk, bin2bcd(timeptr->tm_mon + 1)) |
-	      FIELD_PREP(RTC_DR_DT_Msk | RTC_DR_DU_Msk, bin2bcd(timeptr->tm_mday)) |
-	      FIELD_PREP(RTC_DR_WD_Msk, timeptr->tm_wday);
+	subsec = FIELD_PREP(RTC_TR_SS_Msk, timeptr->tm_nsec * RC10K_DIVA_FRAC / 1000000000U);
 
 	/* Write TR and DR in a single INIT session to ensure consistency */
-	rtc_sf32lb_enter_init_mode(dev);
-	sys_write32(tr, config->base + RTC_TIMER);
-	sys_write32(dr, config->base + RTC_DATER);
-	rtc_sf32lb_exit_init_mode(dev);
+	ll_rtc_enter_init_mode(config->rtc);
+	ll_rtc_set_time(config->rtc, (uint8_t)timeptr->tm_hour, (uint8_t)timeptr->tm_min,
+			(uint8_t)timeptr->tm_sec);
+	ll_rtc_set_subsecond(config->rtc, subsec);
+	ll_rtc_set_date(config->rtc, year, (uint8_t)(timeptr->tm_mon + 1),
+			(uint8_t)timeptr->tm_mday, (uint8_t)timeptr->tm_wday);
+	if (timeptr->tm_year < 100) {
+		ll_rtc_century_set(config->rtc);
+	}
+	ll_rtc_exit_init_mode(config->rtc);
 
-	if (!sys_test_bit(config->base + RTC_CR, RTC_CR_BYPSHAD_Pos)) {
-		rtc_sf32lb_wait_for_sync(dev);
+	if (!ll_rtc_is_bypass_shadow(config->rtc)) {
+		ll_rtc_wait_sync(config->rtc);
 	}
 
 	return 0;
@@ -164,25 +119,25 @@ static int rtc_sf32lb_get_time(const struct device *dev, struct rtc_time *timept
 	uint32_t reg;
 
 	/* Ensure shadow registers are synchronized before reading */
-	if (!sys_test_bit(config->base + RTC_CR, RTC_CR_BYPSHAD_Pos)) {
-		rtc_sf32lb_wait_for_sync(dev);
+	if (!ll_rtc_is_bypass_shadow(config->rtc)) {
+		ll_rtc_wait_sync(config->rtc);
 	}
 
-	reg = sys_read32(config->cfg + SYS_CFG_RTC_TR);
+	reg = ll_rtc_get_time_shadow((HPSYS_CFG_TypeDef *)config->cfg);
 
 	timeptr->tm_hour = bcd2bin(FIELD_GET(RTC_TR_HT_Msk | RTC_TR_HU_Msk, reg));
 	timeptr->tm_min = bcd2bin(FIELD_GET(RTC_TR_MNT_Msk | RTC_TR_MNU_Msk, reg));
 	timeptr->tm_sec = bcd2bin(FIELD_GET(RTC_TR_ST_Msk | RTC_TR_SU_Msk, reg));
 	timeptr->tm_nsec = FIELD_GET(RTC_TR_SS_Msk, reg) * 1000000000U / RC10K_DIVA_FRAC;
 
-	reg = sys_read32(config->cfg + SYS_CFG_RTC_DR);
+	reg = ll_rtc_get_date_shadow((HPSYS_CFG_TypeDef *)config->cfg);
 
 	if (reg & RTC_DR_CB) { /* 20th century */
 		uint8_t year = bcd2bin(FIELD_GET(RTC_DR_YT_Msk | RTC_DR_YU_Msk, reg));
 
 		if (year < 70) {
 			/* Year is 00-69, which should be 2000-2069. Clear CB bit */
-			sys_clear_bit(config->base + RTC_DATER, RTC_DR_CB_Pos);
+			ll_rtc_century_clear(config->rtc);
 
 			timeptr->tm_year = year + 100;
 		} else {
@@ -218,8 +173,6 @@ static int rtc_sf32lb_alarm_set_time(const struct device *dev, uint16_t id, uint
 				     const struct rtc_time *timeptr)
 {
 	const struct rtc_sf32lb_config *config = dev->config;
-	uint32_t alarm_tr;
-	uint32_t alarm_dr;
 	uint32_t alarm_mask = RTC_SF32LB_ALRM_MASK_ALL;
 
 	if (id != 0) {
@@ -240,17 +193,17 @@ static int rtc_sf32lb_alarm_set_time(const struct device *dev, uint16_t id, uint
 	}
 
 	if (mask == 0) {
-		sys_clear_bits(config->base + RTC_CR, RTC_CR_ALRME | RTC_CR_ALRMIE);
+		ll_rtc_disable_alarm(config->rtc);
+		ll_rtc_disable_alarm_interrupt(config->rtc);
 	} else {
-		alarm_tr = FIELD_PREP(RTC_ALRMTR_HT | RTC_ALRMTR_HU, bin2bcd(timeptr->tm_hour)) |
-			   FIELD_PREP(RTC_ALRMTR_MNT | RTC_ALRMTR_MNU, bin2bcd(timeptr->tm_min)) |
-			   FIELD_PREP(RTC_ALRMTR_ST | RTC_ALRMTR_SU, bin2bcd(timeptr->tm_sec));
-
-		alarm_dr = FIELD_PREP(RTC_ALRMDR_DT | RTC_ALRMDR_DU, bin2bcd(timeptr->tm_mday)) |
-			   FIELD_PREP(RTC_ALRMDR_MT | RTC_ALRMDR_MU, bin2bcd(timeptr->tm_mon + 1)) |
-			   FIELD_PREP(RTC_ALRMDR_WD, timeptr->tm_wday);
-
-		sys_write32(alarm_tr, config->base + RTC_ALRMTR);
+		/* ll_rtc_set_alarm() masks the date fields; ll_rtc_set_alarm_mask()
+		 * below re-writes the full mask set, so the net ALRMDR state matches
+		 * the requested fields.
+		 */
+		ll_rtc_set_alarm(config->rtc, (uint8_t)timeptr->tm_hour, (uint8_t)timeptr->tm_min,
+				 (uint8_t)timeptr->tm_sec);
+		ll_rtc_set_alarm_date(config->rtc, (uint8_t)timeptr->tm_wday,
+				      (uint8_t)(timeptr->tm_mon + 1), (uint8_t)timeptr->tm_mday);
 
 		if (mask & RTC_ALARM_TIME_MASK_HOUR) {
 			alarm_mask &= ~RTC_ALRMDR_MSKH;
@@ -271,8 +224,9 @@ static int rtc_sf32lb_alarm_set_time(const struct device *dev, uint16_t id, uint
 			alarm_mask &= ~RTC_ALRMDR_MSKD;
 		}
 
-		sys_write32(alarm_dr | alarm_mask, config->base + RTC_ALRMDR);
-		sys_set_bits(config->base + RTC_CR, RTC_CR_ALRME | RTC_CR_ALRMIE);
+		ll_rtc_set_alarm_mask(config->rtc, alarm_mask);
+		ll_rtc_enable_alarm(config->rtc);
+		ll_rtc_enable_alarm_interrupt(config->rtc);
 	}
 
 	return 0;
@@ -288,13 +242,13 @@ static int rtc_sf32lb_alarm_get_time(const struct device *dev, uint16_t id, uint
 		return -EINVAL;
 	}
 
-	reg = sys_read32(config->base + RTC_ALRMTR);
+	reg = ll_rtc_get_alarm(config->rtc);
 
 	timeptr->tm_hour = bcd2bin(FIELD_GET(RTC_ALRMTR_HT | RTC_ALRMTR_HU, reg));
 	timeptr->tm_min = bcd2bin(FIELD_GET(RTC_ALRMTR_MNT | RTC_ALRMTR_MNU, reg));
 	timeptr->tm_sec = bcd2bin(FIELD_GET(RTC_ALRMTR_ST | RTC_ALRMTR_SU, reg));
 
-	reg = sys_read32(config->base + RTC_ALRMDR);
+	reg = ll_rtc_get_alarm_date(config->rtc);
 
 	timeptr->tm_mday = bcd2bin(FIELD_GET(RTC_ALRMDR_DT | RTC_ALRMDR_DU, reg));
 	timeptr->tm_mon = bcd2bin(FIELD_GET(RTC_ALRMDR_MT | RTC_ALRMDR_MU, reg)) - 1;
@@ -349,7 +303,8 @@ static int rtc_sf32lb_alarm_set_callback(const struct device *dev, uint16_t id,
 	data->alarm_cb.user_data = user_data;
 
 	if (callback == NULL) {
-		sys_clear_bits(config->base + RTC_CR, RTC_CR_ALRME | RTC_CR_ALRMIE);
+		ll_rtc_disable_alarm(config->rtc);
+		ll_rtc_disable_alarm_interrupt(config->rtc);
 	}
 
 	return 0;
@@ -371,12 +326,10 @@ static DEVICE_API(rtc, rtc_sf32lb_driver_api) = {
 static int rtc_sf32lb_init(const struct device *dev)
 {
 	const struct rtc_sf32lb_config *config = dev->config;
-	uint32_t psclr = 0;
 
-	psclr |= FIELD_PREP(RTC_PSCLR_DIVA_INT_Msk, RC10K_DIVA_INT);
-	psclr |= FIELD_PREP(RTC_PSCLR_DIVA_FRAC_Msk, RC10K_DIVA_FRAC);
-	psclr |= FIELD_PREP(RTC_PSCLR_DIVB_Msk, RC10K_DIVB);
-	sys_write32(psclr, config->base + RTC_PSCLR);
+	/* Program INT + FRAC + DIVB for an exact 1 Hz from clk_lrc10 (see manual 9.6) */
+	ll_rtc_set_prescaler(config->rtc, RC10K_DIVA_INT, RC10K_DIVB);
+	ll_rtc_set_prescaler_frac(config->rtc, RC10K_DIVA_FRAC);
 
 #ifdef CONFIG_RTC_ALARM
 	if (config->irq_config_func) {
@@ -390,7 +343,7 @@ static int rtc_sf32lb_init(const struct device *dev)
 	IF_ENABLED(CONFIG_RTC_ALARM, (                                                             \
 		static void rtc_sf32lb_irq_config_func_##n(void);))                                \
 	static const struct rtc_sf32lb_config rtc_sf32lb_config_##n = {                            \
-		.base = DT_INST_REG_ADDR(n),                                                       \
+		.rtc = (RTC_TypeDef *)DT_INST_REG_ADDR(n),                                                       \
 		.cfg = DT_REG_ADDR(DT_INST_PHANDLE(n, sifli_cfg)),                                 \
 		IF_ENABLED(CONFIG_RTC_ALARM,                                                       \
 			(.irq_config_func = rtc_sf32lb_irq_config_func_##n,))                      \
