@@ -17,34 +17,11 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
-#include <register.h>
+#include <ll_mpi.h>
 
 LOG_MODULE_REGISTER(memc_sf32lb_mpi_opi_psram, CONFIG_MEMC_LOG_LEVEL);
 
 /* MPI register offsets */
-#define MPI_CR      offsetof(MPI_TypeDef, CR)
-#define MPI_DR      offsetof(MPI_TypeDef, DR)
-#define MPI_DCR     offsetof(MPI_TypeDef, DCR)
-#define MPI_PSCLR   offsetof(MPI_TypeDef, PSCLR)
-#define MPI_SR      offsetof(MPI_TypeDef, SR)
-#define MPI_SCR     offsetof(MPI_TypeDef, SCR)
-#define MPI_CMDR1   offsetof(MPI_TypeDef, CMDR1)
-#define MPI_AR1     offsetof(MPI_TypeDef, AR1)
-#define MPI_ABR1    offsetof(MPI_TypeDef, ABR1)
-#define MPI_DLR1    offsetof(MPI_TypeDef, DLR1)
-#define MPI_CCR1    offsetof(MPI_TypeDef, CCR1)
-#define MPI_HCMDR   offsetof(MPI_TypeDef, HCMDR)
-#define MPI_HRABR   offsetof(MPI_TypeDef, HRABR)
-#define MPI_HRCCR   offsetof(MPI_TypeDef, HRCCR)
-#define MPI_HWABR   offsetof(MPI_TypeDef, HWABR)
-#define MPI_HWCCR   offsetof(MPI_TypeDef, HWCCR)
-#define MPI_FIFOCR  offsetof(MPI_TypeDef, FIFOCR)
-#define MPI_MISCR   offsetof(MPI_TypeDef, MISCR)
-#define MPI_TIMR    offsetof(MPI_TypeDef, TIMR)
-#define MPI_WDTR    offsetof(MPI_TypeDef, WDTR)
-#define MPI_CALCR   offsetof(MPI_TypeDef, CALCR)
-#define MPI_APM32CR offsetof(MPI_TypeDef, APM32CR)
-#define MPI_CIR     offsetof(MPI_TypeDef, CIR)
 
 /* OPI PSRAM commands */
 #define OPSRAM_CMD_READ    0x00U
@@ -77,7 +54,7 @@ LOG_MODULE_REGISTER(memc_sf32lb_mpi_opi_psram, CONFIG_MEMC_LOG_LEVEL);
 #define CCR_ADSIZE_32   3U
 
 struct memc_sf32lb_mpi_opi_psram_config {
-	uintptr_t mpi_base;
+	MPI_TypeDef *mpi;
 	uintptr_t psram_base;
 	uint32_t size;
 	struct sf32lb_clock_dt_spec clock;
@@ -97,58 +74,55 @@ static void mpi_delay_us(uint32_t us)
 	k_busy_wait(us);
 }
 
-static int mpi_wait_complete(uintptr_t mpi)
+static int mpi_wait_complete(MPI_TypeDef *mpi)
 {
 	int retries = 10000;
 
-	while (!(sys_read32(mpi + MPI_SR) & MPI_SR_TCF)) {
+	while (!ll_mpi_get_transfer_complete_flag(mpi)) {
 		if (--retries <= 0) {
 			LOG_ERR("MPI transfer timeout");
 			return -ETIMEDOUT;
 		}
 	}
-	sys_write32(MPI_SCR_TCFC, mpi + MPI_SCR);
+	ll_mpi_clear_transfer_complete_flag(mpi);
 	return 0;
 }
 
 static void mpi_qspi_init(const struct device *dev)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
-	uintptr_t mpi = cfg->mpi_base;
+	MPI_TypeDef *mpi = cfg->mpi;
 
-	sys_write32(0xFFU, mpi + MPI_TIMR);
-	sys_write32(0x50005000, mpi + MPI_CIR);
-	sys_write32(0xFFU, mpi + MPI_ABR1);
-	sys_write32(0xFFU, mpi + MPI_HRABR);
+	ll_mpi_set_timing(mpi, 0xFFU);
+	ll_mpi_set_comm_interval(mpi, 0x50005000U);
+	ll_mpi_set_alt_bytes(mpi, LL_MPI_CS_1, 0xFFU);
+	ll_mpi_set_ahb_alt_bytes(mpi, 0xFFU);
 }
 
 static int mpi_calibrate_delay(const struct device *dev)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
 	struct memc_sf32lb_mpi_opi_psram_data *data = dev->data;
-	uintptr_t mpi = cfg->mpi_base;
+	MPI_TypeDef *mpi = cfg->mpi;
 	uint32_t delay;
-	uint32_t miscr;
 
 	/* Set prescaler to 2 for calibration */
-	sys_write32(2U, mpi + MPI_PSCLR);
+	ll_mpi_set_clock_div(mpi, 2U);
 
 	/* Clear SCK inversion */
-	miscr = sys_read32(mpi + MPI_MISCR);
-	miscr &= ~MPI_MISCR_SCKINV_Msk;
-	sys_write32(miscr, mpi + MPI_MISCR);
+	ll_mpi_set_sck_invert(mpi, 0U);
 
 	/* Enable calibration */
-	sys_set_bit(mpi + MPI_CALCR, MPI_CALCR_EN_Pos);
+	ll_mpi_calibration_enable(mpi);
 
 	/* Wait for calibration to complete (with timeout) */
 	mpi_delay_us(20);
 	{
 		int retries = 1000;
 
-		while (!(sys_read32(mpi + MPI_CALCR) & MPI_CALCR_DONE)) {
+		while (!ll_mpi_is_calibration_done(mpi)) {
 			if (--retries <= 0) {
-				sys_clear_bit(mpi + MPI_CALCR, MPI_CALCR_EN_Pos);
+				ll_mpi_calibration_disable(mpi);
 				LOG_ERR("MPI calibration timeout (DLL2 not locked?)");
 				return -ETIMEDOUT;
 			}
@@ -157,10 +131,10 @@ static int mpi_calibrate_delay(const struct device *dev)
 	}
 
 	/* Read delay value */
-	delay = sys_read32(mpi + MPI_CALCR) & MPI_CALCR_DELAY_Msk;
+	delay = ll_mpi_get_calibration_delay(mpi);
 
 	/* Disable calibration */
-	sys_clear_bit(mpi + MPI_CALCR, MPI_CALCR_EN_Pos);
+	ll_mpi_calibration_disable(mpi);
 
 	if (delay < 4) {
 		LOG_ERR("MPI calibration result too small: %u", delay);
@@ -172,7 +146,7 @@ static int mpi_calibrate_delay(const struct device *dev)
 	data->dqs_delay = (uint8_t)(delay - 4);
 
 	/* Restore prescaler to 1 */
-	sys_write32(1U, mpi + MPI_PSCLR);
+	ll_mpi_set_clock_div(mpi, 1U);
 
 	LOG_DBG("Calibration: delay=%u, sck=%u, dqs=%u", delay, data->sck_delay, data->dqs_delay);
 
@@ -183,17 +157,13 @@ static void mpi_set_delays(const struct device *dev)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
 	struct memc_sf32lb_mpi_opi_psram_data *data = dev->data;
-	uintptr_t mpi = cfg->mpi_base;
-	uint32_t miscr;
+	MPI_TypeDef *mpi = cfg->mpi;
 
-	miscr = sys_read32(mpi + MPI_MISCR);
-	miscr &= ~(MPI_MISCR_SCKDLY_Msk | MPI_MISCR_DQSDLY_Msk);
-	miscr |= FIELD_PREP(MPI_MISCR_SCKDLY_Msk, data->sck_delay);
-	miscr |= FIELD_PREP(MPI_MISCR_DQSDLY_Msk, data->dqs_delay);
-	sys_write32(miscr, mpi + MPI_MISCR);
+	ll_mpi_set_sck_delay(mpi, data->sck_delay);
+	ll_mpi_set_dqs_delay(mpi, data->dqs_delay);
 }
 
-static void mpi_manual_cmd(uintptr_t mpi, bool is_write, uint8_t dmode, uint8_t dcyc,
+static void mpi_manual_cmd(MPI_TypeDef *mpi, bool is_write, uint8_t dmode, uint8_t dcyc,
 			   uint8_t abmode, uint8_t absize, uint8_t adsize, uint8_t admode,
 			   uint8_t imode)
 {
@@ -210,13 +180,13 @@ static void mpi_manual_cmd(uintptr_t mpi, bool is_write, uint8_t dmode, uint8_t 
 		ccr1 |= MPI_CCR1_FMODE_Msk;
 	}
 
-	sys_write32(ccr1, mpi + MPI_CCR1);
+	ll_mpi_write_command_config(mpi, LL_MPI_CS_1, ccr1);
 }
 
 static int mpi_psram_reset(const struct device *dev)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
-	uintptr_t mpi = cfg->mpi_base;
+	MPI_TypeDef *mpi = cfg->mpi;
 	int ret;
 
 	/* Configure reset command: write mode, no data, 1-byte AB, 32-bit addr, OPI mode */
@@ -224,8 +194,8 @@ static int mpi_psram_reset(const struct device *dev)
 		       CCR_MODE_OCT);
 
 	/* Send reset command */
-	sys_write32(0U, mpi + MPI_AR1);
-	sys_write32(OPSRAM_CMD_RESET, mpi + MPI_CMDR1);
+	ll_mpi_set_address(mpi, LL_MPI_CS_1, 0U);
+	ll_mpi_set_command_byte(mpi, LL_MPI_CS_1, OPSRAM_CMD_RESET);
 	ret = mpi_wait_complete(mpi);
 	if (ret < 0) {
 		return ret;
@@ -239,21 +209,21 @@ static int mpi_psram_reset(const struct device *dev)
 static int mpi_mr_write(const struct device *dev, uint8_t addr, uint8_t value)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
-	uintptr_t mpi = cfg->mpi_base;
+	MPI_TypeDef *mpi = cfg->mpi;
 
 	/* Configure MR write command: write mode, OPI data, no dummy, 32-bit addr, OPI mode */
 	mpi_manual_cmd(mpi, true, CCR_MODE_OCT, 0, CCR_MODE_NONE, 0, CCR_ADSIZE_32, CCR_MODE_OCT,
 		       CCR_MODE_OCT);
 
 	/* Set data length to 2 bytes */
-	sys_write32(1U, mpi + MPI_DLR1);
+	ll_mpi_set_data_length(mpi, LL_MPI_CS_1, 2U);
 
 	/* Write data to FIFO */
-	sys_write32((uint32_t)value, mpi + MPI_DR);
+	ll_mpi_write_data(mpi, (uint32_t)value);
 
 	/* Send command */
-	sys_write32(addr, mpi + MPI_AR1);
-	sys_write32(OPSRAM_CMD_MRWRITE, mpi + MPI_CMDR1);
+	ll_mpi_set_address(mpi, LL_MPI_CS_1, addr);
+	ll_mpi_set_command_byte(mpi, LL_MPI_CS_1, OPSRAM_CMD_MRWRITE);
 	return mpi_wait_complete(mpi);
 }
 
@@ -261,7 +231,7 @@ static __maybe_unused uint8_t mpi_mr_read(const struct device *dev, uint8_t addr
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
 	struct memc_sf32lb_mpi_opi_psram_data *data = dev->data;
-	uintptr_t mpi = cfg->mpi_base;
+	MPI_TypeDef *mpi = cfg->mpi;
 	uint8_t rdcyc = data->rd_latency;
 
 	/* Configure MR read command: read mode, OPI data, dummy cycles, 32-bit addr, OPI mode */
@@ -269,35 +239,28 @@ static __maybe_unused uint8_t mpi_mr_read(const struct device *dev, uint8_t addr
 		       CCR_MODE_OCT, CCR_MODE_OCT);
 
 	/* Set data length to 2 bytes */
-	sys_write32(1U, mpi + MPI_DLR1);
+	ll_mpi_set_data_length(mpi, LL_MPI_CS_1, 2U);
 
 	/* Send command */
-	sys_write32(addr, mpi + MPI_AR1);
-	sys_write32(OPSRAM_CMD_MRREAD, mpi + MPI_CMDR1);
+	ll_mpi_set_address(mpi, LL_MPI_CS_1, addr);
+	ll_mpi_set_command_byte(mpi, LL_MPI_CS_1, OPSRAM_CMD_MRREAD);
 	if (mpi_wait_complete(mpi) < 0) {
 		return 0;
 	}
 
-	return (uint8_t)(sys_read32(mpi + MPI_DR) & 0xFFU);
+	return (uint8_t)(ll_mpi_read_data(mpi) & 0xFFU);
 }
 
 static void mpi_set_fixlat(const struct device *dev, bool fix, uint8_t r_lat, uint8_t w_lat)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
-	uintptr_t mpi = cfg->mpi_base;
-	uint32_t dcr;
+	MPI_TypeDef *mpi = cfg->mpi;
 	uint8_t mr0, mr4;
 	uint8_t rlat_arr[8] = {0, 0, 0, 0, 1, 2, 3, 4};
 	uint8_t wlat_arr[8] = {0, 0, 0, 0, 4, 2, 6, 1};
 
 	/* Set fixed latency in DCR */
-	dcr = sys_read32(mpi + MPI_DCR);
-	if (fix) {
-		dcr |= MPI_DCR_FIXLAT_Msk;
-	} else {
-		dcr &= ~MPI_DCR_FIXLAT_Msk;
-	}
-	sys_write32(dcr, mpi + MPI_DCR);
+	ll_mpi_set_fixed_latency(mpi, fix ? 1U : 0U);
 
 	/* Configure MR0 and MR4 */
 	if (fix) {
@@ -316,8 +279,8 @@ static void mpi_configure_ahb_cmd(const struct device *dev)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
 	struct memc_sf32lb_mpi_opi_psram_data *data = dev->data;
-	uintptr_t mpi = cfg->mpi_base;
-	uint32_t hrccr, hwccr, hcmdr;
+	MPI_TypeDef *mpi = cfg->mpi;
+	uint32_t hrccr, hwccr;
 
 	/* Configure AHB read command */
 	hrccr = FIELD_PREP(MPI_HRCCR_IMODE_Msk, CCR_MODE_OCT) |
@@ -326,7 +289,7 @@ static void mpi_configure_ahb_cmd(const struct device *dev)
 		FIELD_PREP(MPI_HRCCR_ABMODE_Msk, CCR_MODE_NONE) |
 		FIELD_PREP(MPI_HRCCR_DCYC_Msk, data->rd_latency - 1) |
 		FIELD_PREP(MPI_HRCCR_DMODE_Msk, CCR_MODE_OCT);
-	sys_write32(hrccr, mpi + MPI_HRCCR);
+	ll_mpi_set_ahb_read_config(mpi, hrccr);
 
 	/* Configure AHB write command */
 	hwccr = FIELD_PREP(MPI_HWCCR_IMODE_Msk, CCR_MODE_OCT) |
@@ -335,18 +298,17 @@ static void mpi_configure_ahb_cmd(const struct device *dev)
 		FIELD_PREP(MPI_HWCCR_ABMODE_Msk, CCR_MODE_NONE) |
 		FIELD_PREP(MPI_HWCCR_DCYC_Msk, data->wr_latency - 1) |
 		FIELD_PREP(MPI_HWCCR_DMODE_Msk, CCR_MODE_OCT);
-	sys_write32(hwccr, mpi + MPI_HWCCR);
+	ll_mpi_set_ahb_write_config(mpi, hwccr);
 
 	/* Set read/write commands */
-	hcmdr = OPSRAM_CMD_READ | (OPSRAM_CMD_WRITE << 8);
-	sys_write32(hcmdr, mpi + MPI_HCMDR);
+	ll_mpi_set_ahb_read_command(mpi, OPSRAM_CMD_READ);
+	ll_mpi_set_ahb_write_command(mpi, OPSRAM_CMD_WRITE);
 }
 
 static void mpi_set_cs_timing(const struct device *dev, uint32_t freq)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
-	uintptr_t mpi = cfg->mpi_base;
-	uint32_t dcr;
+	MPI_TypeDef *mpi = cfg->mpi;
 	uint16_t cs_min, cs_max, cshmin, trcmin;
 
 	/* OPI frequency is half of MPI clock */
@@ -372,14 +334,7 @@ static void mpi_set_cs_timing(const struct device *dev, uint32_t freq)
 		trcmin = 20;
 	}
 
-	dcr = sys_read32(mpi + MPI_DCR);
-	dcr &= ~(MPI_DCR_CSLMAX_Msk | MPI_DCR_CSLMIN_Msk | MPI_DCR_CSHMIN_Msk |
-		 MPI_DCR_TRCMIN_Msk);
-	dcr |= FIELD_PREP(MPI_DCR_CSLMAX_Msk, cs_max);
-	dcr |= FIELD_PREP(MPI_DCR_CSLMIN_Msk, cs_min);
-	dcr |= FIELD_PREP(MPI_DCR_CSHMIN_Msk, cshmin);
-	dcr |= FIELD_PREP(MPI_DCR_TRCMIN_Msk, trcmin);
-	sys_write32(dcr, mpi + MPI_DCR);
+	ll_mpi_set_cs_timing(mpi, cs_max, cs_min, cshmin, trcmin);
 }
 
 static void mpi_set_latency_by_freq(const struct device *dev, uint32_t freq)
@@ -408,8 +363,7 @@ static int memc_sf32lb_mpi_opi_psram_init(const struct device *dev)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
 	struct memc_sf32lb_mpi_opi_psram_data *data = dev->data;
-	uintptr_t mpi = cfg->mpi_base;
-	uint32_t cr, dcr;
+	MPI_TypeDef *mpi = cfg->mpi;
 	uint32_t freq;
 	int ret;
 
@@ -471,7 +425,7 @@ static int memc_sf32lb_mpi_opi_psram_init(const struct device *dev)
 	}
 
 	/* Set prescaler to 1 (no division) */
-	sys_write32(1U, mpi + MPI_PSCLR);
+	ll_mpi_set_clock_div(mpi, 1U);
 
 	/* Set CS timing based on frequency */
 	mpi_set_cs_timing(dev, freq);
@@ -480,19 +434,15 @@ static int memc_sf32lb_mpi_opi_psram_init(const struct device *dev)
 	mpi_set_latency_by_freq(dev, freq);
 
 	/* Configure DCR: row boundary=7 (1KB), enable DQS */
-	dcr = sys_read32(mpi + MPI_DCR);
-	dcr &= ~MPI_DCR_RBSIZE_Msk;
-	dcr |= FIELD_PREP(MPI_DCR_RBSIZE_Msk, 7);
-	dcr |= MPI_DCR_DQSE_Msk;
-	sys_write32(dcr, mpi + MPI_DCR);
+	ll_mpi_set_row_boundary_size(mpi, 7U);
+	ll_mpi_enable_dqs(mpi);
 
 	/* Set delay values */
 	mpi_set_delays(dev);
 
 	/* Enable QSPI and OPI mode */
-	cr = sys_read32(mpi + MPI_CR);
-	cr |= MPI_CR_EN_Msk | MPI_CR_OPIE_Msk;
-	sys_write32(cr, mpi + MPI_CR);
+	ll_mpi_enable(mpi);
+	ll_mpi_set_protocol(mpi, LL_MPI_PROTO_OPI);
 
 	/* Reset PSRAM */
 	ret = mpi_psram_reset(dev);
@@ -535,7 +485,7 @@ static int memc_sf32lb_mpi_opi_psram_init(const struct device *dev)
 	mpi_set_fixlat(dev, true, r_lat, w_lat);
 
 	/* Set watchdog timer */
-	sys_write32(0x1FFFF, mpi + MPI_WDTR);
+	ll_mpi_set_watchdog(mpi, 0x1FFFFU);
 
 	LOG_INF("PSRAM initialized: base=0x%08lx, size=%u bytes", (unsigned long)cfg->psram_base,
 		cfg->size);
@@ -549,7 +499,7 @@ static int memc_sf32lb_mpi_opi_psram_init(const struct device *dev)
                                                                                                    \
 	static const struct memc_sf32lb_mpi_opi_psram_config                                       \
 		memc_sf32lb_mpi_opi_psram_config_##n = {                                           \
-			.mpi_base = DT_INST_REG_ADDR_BY_NAME(n, ctrl),                            \
+			.mpi = (MPI_TypeDef *)DT_INST_REG_ADDR_BY_NAME(n, ctrl),                            \
 			.psram_base = DT_INST_REG_ADDR_BY_NAME(n, psram),                         \
 			.size = DT_INST_REG_SIZE_BY_NAME(n, psram),                               \
 			.clock = SF32LB_CLOCK_DT_INST_SPEC_GET(n),                                \
