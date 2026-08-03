@@ -15,7 +15,7 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/toolchain.h>
 
-#include <register.h>
+#include <ll_pmuc.h>
 
 LOG_MODULE_REGISTER(regulator_sf32lb_ldo, CONFIG_REGULATOR_LOG_LEVEL);
 
@@ -27,7 +27,7 @@ struct sf32lb_ldo_desc {
 
 struct regulator_sf32lb_config {
 	struct regulator_common_config common;
-	uintptr_t reg;
+	PMUC_TypeDef *pmuc;
 	const struct sf32lb_ldo_desc *desc;
 };
 
@@ -39,13 +39,8 @@ static int regulator_sf32lb_enable(const struct device *dev)
 {
 	const struct regulator_sf32lb_config *config = dev->config;
 	const struct sf32lb_ldo_desc *desc = config->desc;
-	uint32_t val;
 
-	val = sys_read32(config->reg);
-	/* Clear power down bit and set enable bit */
-	val &= ~desc->pd_mask;
-	val |= desc->enable_mask;
-	sys_write32(val, config->reg);
+	ll_pmuc_peri_ldo_enable(config->pmuc, desc->enable_mask, desc->pd_mask);
 
 	return 0;
 }
@@ -54,13 +49,8 @@ static int regulator_sf32lb_disable(const struct device *dev)
 {
 	const struct regulator_sf32lb_config *config = dev->config;
 	const struct sf32lb_ldo_desc *desc = config->desc;
-	uint32_t val;
 
-	val = sys_read32(config->reg);
-	/* Clear enable bit and set power down bit */
-	val &= ~desc->enable_mask;
-	val |= desc->pd_mask;
-	sys_write32(val, config->reg);
+	ll_pmuc_peri_ldo_disable(config->pmuc, desc->enable_mask, desc->pd_mask);
 
 	return 0;
 }
@@ -122,9 +112,6 @@ static const struct sf32lb_ldo_desc sf32lb_ldo_descs[] = {
 	},
 };
 
-/* PERI_LDO register offset within PMUC */
-#define SF32LB_PERI_LDO_OFFSET 0x5c
-
 #define SF32LB_LDO_DATA_NAME(node_id) _CONCAT(data_, DT_DEP_ORD(node_id))
 #define SF32LB_LDO_CONF_NAME(node_id) _CONCAT(config_, DT_DEP_ORD(node_id))
 
@@ -134,7 +121,7 @@ static const struct sf32lb_ldo_desc sf32lb_ldo_descs[] = {
                                                                                                    \
 	static const struct regulator_sf32lb_config SF32LB_LDO_CONF_NAME(node_id) = {              \
 		.common = REGULATOR_DT_COMMON_CONFIG_INIT(node_id),                                \
-		.reg = DT_REG_ADDR(DT_PARENT(DT_PARENT(node_id))) + SF32LB_PERI_LDO_OFFSET,        \
+		.pmuc = (PMUC_TypeDef *)DT_REG_ADDR(DT_PARENT(DT_PARENT(node_id))),                 \
 		.desc = &sf32lb_ldo_descs[idx],                                                    \
 	};                                                                                         \
                                                                                                    \
