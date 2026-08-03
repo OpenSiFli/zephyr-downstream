@@ -20,4 +20,5 @@ supported:
   - pwm
   - spi
   - adc
+  - i2c
 vendor: sifli

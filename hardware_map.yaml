@@ -9,3 +9,4 @@
   fixtures:
     - spi_loopback
     - gpio_loopback
+    - i2c_at24
