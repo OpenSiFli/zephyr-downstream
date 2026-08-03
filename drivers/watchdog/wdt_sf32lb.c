@@ -8,23 +8,13 @@
 #include <zephyr/drivers/watchdog.h>
 #include <zephyr/logging/log.h>
 
+#include <ll_hpsys_cfg.h>
 #include <ll_pmuc.h>
+#include <ll_wdt.h>
 
 LOG_MODULE_REGISTER(wdt_sf32lb, CONFIG_WDT_LOG_LEVEL);
 
-/* LL gap: the target HAL revision has PMUC LL APIs, but no WDT LL header. */
-#define WDT_CVR0        offsetof(WDT_TypeDef, WDT_CVR0)
-#define WDT_CR          offsetof(WDT_TypeDef, WDT_CR)
-#define WDT_CCR         offsetof(WDT_TypeDef, WDT_CCR)
-
-#define HPSYS_CFG_SYSCR offsetof(HPSYS_CFG_TypeDef, SYSCR)
-
-#define WDT_CMD_START 0x00000076U
-#define WDT_CMD_STOP  0x00000034U
-
 #define WDT_CVR0_MAX 0xFFFFFF
-
-#define WDT_WDT_CR_RESPONSE_MODE1 0U
 
 /* Assume LRC10 clocks WDT (LRC32 support to be added in the future) */
 #define WDT_CLK_KHZ 10
@@ -32,7 +22,7 @@ LOG_MODULE_REGISTER(wdt_sf32lb, CONFIG_WDT_LOG_LEVEL);
 #define WDT_WINDOW_MS_MAX (WDT_CVR0_MAX / WDT_CLK_KHZ)
 
 struct wdt_sf32lb_config {
-	uintptr_t base;
+	WDT_TypeDef *wdt;
 	uintptr_t pmuc;
 	uintptr_t cfg;
 	bool reset_all;
@@ -45,11 +35,8 @@ struct wdt_sf32lb_data {
 static inline bool wdt_sf32lb_is_enabled(const struct device *dev)
 {
 	const struct wdt_sf32lb_config *config = dev->config;
-	uint32_t cr;
 
-	cr = sys_read32(config->base + WDT_CCR);
-
-	return (cr == WDT_CMD_START);
+	return ll_wdt_is_active(config->wdt) != 0U;
 }
 
 static int wdt_sf32lb_setup(const struct device *dev, uint8_t options)
@@ -66,7 +53,7 @@ static int wdt_sf32lb_setup(const struct device *dev, uint8_t options)
 		return -EBUSY;
 	}
 
-	sys_write32(WDT_CMD_START, config->base + WDT_CCR);
+	ll_wdt_feed(config->wdt);
 
 	return 0;
 }
@@ -81,7 +68,7 @@ static int wdt_sf32lb_disable(const struct device *dev)
 		return -EFAULT;
 	}
 	data->timeout_valid = false;
-	sys_write32(WDT_CMD_STOP, config->base + WDT_CCR);
+	ll_wdt_disable(config->wdt);
 
 	return 0;
 }
@@ -118,7 +105,7 @@ static int wdt_sf32lb_install_timeout(const struct device *dev,
 
 	data->timeout_valid = true;
 
-	sys_write32(wdt_cfg->window.max * WDT_CLK_KHZ, config->base + WDT_CVR0);
+	ll_wdt_set_timeout1(config->wdt, wdt_cfg->window.max * WDT_CLK_KHZ);
 
 	return 0;
 }
@@ -133,7 +120,7 @@ static int wdt_sf32lb_feed(const struct device *dev, int channel_id)
 		return -EINVAL;
 	}
 
-	sys_write32(WDT_CMD_START, config->base + WDT_CCR);
+	ll_wdt_feed(config->wdt);
 
 	return 0;
 }
@@ -148,21 +135,15 @@ static DEVICE_API(wdt, wdt_sf32lb_api) = {
 static int wdt_sf32lb_init(const struct device *dev)
 {
 	const struct wdt_sf32lb_config *config = dev->config;
-	uint32_t cr;
 
-	/* LL gap: the target HAL revision has PMUC LL APIs, but no WDT LL header. */
-	cr = sys_read32(config->base + WDT_CR);
-	cr &= ~WDT_WDT_CR_RESPONSE_MODE_Msk;
-	cr |= WDT_WDT_CR_RESPONSE_MODE1;
-	sys_write32(cr, config->base + WDT_CR);
+	ll_wdt_set_response_mode(config->wdt, LL_WDT_RESPONSE_RESET);
 
 	ll_pmuc_enable_wakeup_source((PMUC_TypeDef *)config->pmuc, LL_PMUC_WKUP_WDT1);
 
-	/* LL gap: HPSYS_CFG SYSCR WDT reboot routing has no LL helper. */
 	if (config->reset_all) {
-		sys_set_bit(config->cfg + HPSYS_CFG_SYSCR, HPSYS_CFG_SYSCR_WDT1_REBOOT_Pos);
+		ll_cfg_wdt1_reboot_set((HPSYS_CFG_TypeDef *)config->cfg);
 	} else {
-		sys_clear_bit(config->cfg + HPSYS_CFG_SYSCR, HPSYS_CFG_SYSCR_WDT1_REBOOT_Pos);
+		ll_cfg_wdt1_reboot_clear((HPSYS_CFG_TypeDef *)config->cfg);
 	}
 
 	return 0;
@@ -170,7 +151,7 @@ static int wdt_sf32lb_init(const struct device *dev)
 
 #define WDT_SF32LB_INIT(index)                                                                     \
 	static const struct wdt_sf32lb_config wdt_sf32lb_config_##index = {                        \
-		.base = DT_INST_REG_ADDR(index),                                                   \
+		.wdt = (WDT_TypeDef *)DT_INST_REG_ADDR(index),                                                   \
 		.pmuc = DT_REG_ADDR(DT_INST_PHANDLE(index, sifli_pmuc)),                           \
 		.cfg = DT_REG_ADDR(DT_INST_PHANDLE(index, sifli_cfg)),                             \
 		.reset_all = DT_INST_PROP(index, sifli_reset_all),                                 \
