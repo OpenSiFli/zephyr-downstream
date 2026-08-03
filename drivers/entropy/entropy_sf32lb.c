@@ -10,47 +10,37 @@
 #include <zephyr/drivers/entropy.h>
 #include <zephyr/logging/log.h>
 
-#include <register.h>
+#include <ll_rng.h>
 
 LOG_MODULE_REGISTER(entropy_sf32lb, CONFIG_ENTROPY_LOG_LEVEL);
 
-#define TRNG_CTRL offsetof(TRNG_TypeDef, CTRL)
-#define TRNG_STAT offsetof(TRNG_TypeDef, STAT)
-#define TRNG_RAND offsetof(TRNG_TypeDef, RAND_NUM0)
-
 #define TRNG_RAND_NUM_MAX (8U)
 
-#define TRNG_RAND_MASK (TRNG_RAND_NUM_MAX - 1U)
-
 struct entropy_sf32lb_config {
-	uintptr_t base;
+	TRNG_TypeDef *trng;
 	struct sf32lb_clock_dt_spec clock;
 };
 
 static int entropy_sf32lb_get_entropy(const struct device *dev, uint8_t *buffer, uint16_t length)
 {
 	const struct entropy_sf32lb_config *config = dev->config;
+	TRNG_TypeDef *trng = config->trng;
 	uint32_t buf[TRNG_RAND_NUM_MAX];
 	uint16_t bytes;
 
 	while (length) {
-		sys_set_bit(config->base + TRNG_CTRL, TRNG_CTRL_GEN_SEED_START_Pos);
-		while (!sys_test_bit(config->base + TRNG_STAT, TRNG_STAT_SEED_VALID_Pos)) {
+		ll_rng_start_seed(trng);
+		while (!ll_rng_is_seed_valid(trng)) {
 		}
 
-		/* Generate random data */
-		sys_set_bit(config->base + TRNG_CTRL, TRNG_CTRL_GEN_RAND_NUM_START_Pos);
-		while (!sys_test_bit(config->base + TRNG_STAT, TRNG_STAT_RAND_NUM_VALID_Pos)) {
+		ll_rng_start(trng);
+		while (!ll_rng_is_data_ready(trng)) {
 		}
 
-		for (uint8_t i = 0U; i < TRNG_RAND_NUM_MAX; i++) {
-			buf[i] = sys_read32(config->base + TRNG_RAND + (i * 4U));
-		}
+		ll_rng_read_all(trng, buf);
 
 		bytes = MIN(length, sizeof(buf));
-
 		memcpy(buffer, buf, bytes);
-
 		length -= bytes;
 		buffer += bytes;
 	}
@@ -75,7 +65,7 @@ static int entropy_sf32lb_init(const struct device *dev)
 
 #define ENTROPY_SF32LB_DEFINE(n)                                                                   \
 	static const struct entropy_sf32lb_config entropy_sf32lb_config_##n = {                    \
-		.base = DT_INST_REG_ADDR(n),                                                       \
+		.trng = (TRNG_TypeDef *)DT_INST_REG_ADDR(n),                                                       \
 		.clock = SF32LB_CLOCK_DT_INST_SPEC_GET(n),                                         \
 	};                                                                                         \
                                                                                                    \
