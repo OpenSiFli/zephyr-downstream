@@ -16,23 +16,17 @@
 #include <zephyr/sys/minmax.h>
 #include <zephyr/sys/util.h>
 
-#include <soc.h>
+#include <ll_efuse.h>
+#include <ll_pmuc.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(otp_sifli_efuse, CONFIG_OTP_LOG_LEVEL);
-
-/* eFuse controller register offsets (derived from CMSIS structure) */
-#define EFUSEC_REG_CR offsetof(EFUSEC_TypeDef, CR)
-#define EFUSEC_REG_SR offsetof(EFUSEC_TypeDef, SR)
-
-/* PMUC register offsets (derived from CMSIS structure) */
-#define PMUC_REG_HPSYS_VOUT offsetof(PMUC_TypeDef, HPSYS_VOUT)
 
 /* Timeout for eFuse read operation */
 #define EFUSE_READ_TIMEOUT_US 10000
 
 struct otp_sifli_efuse_config {
-	uintptr_t base;
+	EFUSEC_TypeDef *efuse;
 	uintptr_t pmuc_base;
 	uint8_t *cache;
 	const uint32_t *bank_offsets;
@@ -44,28 +38,6 @@ struct otp_sifli_efuse_data {
 	bool cached;
 	struct k_mutex lock;
 };
-
-static inline uint32_t efuse_read_reg(const struct otp_sifli_efuse_config *config, uint32_t offset)
-{
-	return sys_read32(config->base + offset);
-}
-
-static inline void efuse_write_reg(const struct otp_sifli_efuse_config *config, uint32_t offset,
-				   uint32_t value)
-{
-	sys_write32(value, config->base + offset);
-}
-
-static inline uint32_t pmuc_read_reg(const struct otp_sifli_efuse_config *config, uint32_t offset)
-{
-	return sys_read32(config->pmuc_base + offset);
-}
-
-static inline void pmuc_write_reg(const struct otp_sifli_efuse_config *config, uint32_t offset,
-				  uint32_t value)
-{
-	sys_write32(value, config->pmuc_base + offset);
-}
 
 /**
  * @brief Read a single bank from eFuse hardware
@@ -88,42 +60,43 @@ static int efuse_read_bank(const struct otp_sifli_efuse_config *config, uint8_t 
 	}
 
 	/* Adjust HPSYS LDO voltage before reading */
-	org_vout = pmuc_read_reg(config, PMUC_REG_HPSYS_VOUT);
+	org_vout = ll_pmuc_get_hpsys_vout((PMUC_TypeDef *)config->pmuc_base);
 	new_vout = clamp(org_vout + 3, 0xe, 0xf);
-	pmuc_write_reg(config, PMUC_REG_HPSYS_VOUT, new_vout);
+	ll_pmuc_set_hpsys_vout((PMUC_TypeDef *)config->pmuc_base, new_vout);
 	k_busy_wait(20);
 
-	/* Select bank and set READ mode (MODE=0) */
-	efuse_write_reg(config, EFUSEC_REG_CR, (bank << EFUSEC_CR_BANKSEL_Pos));
+	/* Select bank and set READ mode (MODE=0), see manual 13.3.4 */
+	ll_efuse_set_bank(config->efuse, bank);
+	ll_efuse_set_mode(config->efuse, LL_EFUSE_MODE_READ);
 
 	/* Start read operation */
-	efuse_write_reg(config, EFUSEC_REG_CR, (bank << EFUSEC_CR_BANKSEL_Pos) | EFUSEC_CR_EN);
+	ll_efuse_start(config->efuse);
 
 	/* Wait for read completion */
-	while ((efuse_read_reg(config, EFUSEC_REG_SR) & EFUSEC_SR_DONE) == 0) {
+	while (!ll_efuse_is_done(config->efuse)) {
 		k_busy_wait(1);
 		timeout++;
 		if (timeout > EFUSE_READ_TIMEOUT_US) {
 			LOG_ERR("eFuse read timeout for bank %u", bank);
-			pmuc_write_reg(config, PMUC_REG_HPSYS_VOUT, org_vout);
+			ll_pmuc_set_hpsys_vout((PMUC_TypeDef *)config->pmuc_base, org_vout);
 			return -ETIMEDOUT;
 		}
 	}
 
 	/* Clear done flag */
-	efuse_write_reg(config, EFUSEC_REG_SR, EFUSEC_SR_DONE);
+	ll_efuse_clear_done(config->efuse);
 
 	/* Get bank data register offset from config */
 	bank_data_offset = config->bank_offsets[bank];
 
 	/* Read bank data */
 	for (size_t i = 0; i < config->bank_size / sizeof(uint32_t); i++) {
-		val = efuse_read_reg(config, bank_data_offset + i * sizeof(uint32_t));
+		val = ll_efuse_read_word_at(config->efuse, bank_data_offset + i * sizeof(uint32_t));
 		sys_put_le32(val, &data[i * sizeof(uint32_t)]);
 	}
 
 	/* Restore original LDO voltage */
-	pmuc_write_reg(config, PMUC_REG_HPSYS_VOUT, org_vout);
+	ll_pmuc_set_hpsys_vout((PMUC_TypeDef *)config->pmuc_base, org_vout);
 
 	return 0;
 }
@@ -222,7 +195,7 @@ static DEVICE_API(otp, otp_sifli_efuse_api) = {
 	static struct otp_sifli_efuse_data otp_sifli_efuse_data_##n;                               \
                                                                                                    \
 	static const struct otp_sifli_efuse_config otp_sifli_efuse_config_##n = {                  \
-		.base = DT_INST_REG_ADDR(n),                                                       \
+		.efuse = (EFUSEC_TypeDef *)DT_INST_REG_ADDR(n),                                                       \
 		.pmuc_base = DT_REG_ADDR(DT_INST_PHANDLE(n, sifli_pmuc)),                          \
 		.cache = otp_sifli_efuse_cache_##n,                                                \
 		.bank_offsets = otp_sifli_efuse_bank_offsets_##n,                                  \
