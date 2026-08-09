@@ -1,0 +1,72 @@
+/*
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/ {
+	pwm_loopback_0 {
+		compatible = "test-pwm-loopback";
+
+		/*
+		 * NOTE:
+		 * The first PWM must come from a 16-bit timer.
+		 *
+		 * Replace the controller/channel numbers according to
+		 * the SF32LB52 reference manual.
+		 */
+		pwms =
+			<&gptim1_pwm 0 0 PWM_POLARITY_NORMAL>,
+			<&gptim2_pwm 0 0 PWM_POLARITY_NORMAL>;
+	};
+};
+
+&pinctrl {
+	gptim1_pwm_default: gptim1_pwm_default {
+		group1 {
+			/*
+			 * TODO:
+			 * Replace with the actual PWM output pin if PA00
+			 * isn't free / already used elsewhere on this board.
+			 */
+			pinmux = <
+				PA11_GPTIM1_CH1
+			>;
+		};
+	};
+	gptim2_pwm_default: gptim2_pwm_default {
+		group1 {
+			pinmux = <
+				PA10_GPTIM2_CH1
+			>;
+			input-enable;
+		};
+	};
+};
+
+&gptim1 {
+	status = "okay";
+
+	/* Adjust according to the desired timer clock */
+	sifli,prescaler = <1199>;
+
+	gptim1_pwm: pwm {
+		status = "okay";
+		pinctrl-0 = <&gptim1_pwm_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&gptim2 {
+	status = "okay";
+
+	/* Adjust according to the desired timer clock */
+	sifli,prescaler = <1199>;
+
+	gptim2_pwm: pwm {
+		status = "okay";
+		pinctrl-0 = <&gptim2_pwm_default>;
+		pinctrl-names = "default";
+	};
+};
