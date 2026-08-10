@@ -1,0 +1,73 @@
+/*
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/*
+ * PWM loopback capture test wiring (fixture "pwm_loopback"):
+ *
+ *   index 0 -> gptim1 PWM CH1 on PA01 (signal generation)
+ *   index 1 -> gptim2 PWM CH1 on PA00 (input capture)
+ *
+ * A jumper must physically connect PA01 to PA00. The SF32LB52 GPTs are
+ * 32-bit timers, so no timer width constraint applies here (unlike the
+ * STM32 boards which require a 32-bit timer at index 0).
+ */
+/ {
+	pwm_loopback_0 {
+		compatible = "test-pwm-loopback";
+
+		pwms =
+			<&gptim1_pwm 0 0 PWM_POLARITY_NORMAL>,
+			<&gptim2_pwm 0 0 PWM_POLARITY_NORMAL>;
+	};
+};
+
+&pinctrl {
+	/* PWM output on gptim1 CH1 -> PA01 */
+	gptim1_pwm_default: gptim1_pwm_default {
+		group1 {
+			pinmux = <
+				PA01_GPTIM1_CH1
+			>;
+		};
+	};
+
+	/* PWM capture input on gptim2 CH1 -> PA00 (must be an input) */
+	gptim2_pwm_default: gptim2_pwm_default {
+		group1 {
+			pinmux = <
+				PA00_GPTIM2_CH1
+			>;
+			input-enable;
+		};
+	};
+};
+
+&gptim1 {
+	status = "okay";
+
+	/* Adjust according to the desired timer clock */
+	sifli,prescaler = <1199>;
+
+	gptim1_pwm: pwm {
+		status = "okay";
+		pinctrl-0 = <&gptim1_pwm_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&gptim2 {
+	status = "okay";
+
+	/* Adjust according to the desired timer clock */
+	sifli,prescaler = <1199>;
+
+	gptim2_pwm: pwm {
+		status = "okay";
+		pinctrl-0 = <&gptim2_pwm_default>;
+		pinctrl-names = "default";
+	};
+};
