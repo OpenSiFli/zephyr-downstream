@@ -31,14 +31,14 @@
 			 * isn't free / already used elsewhere on this board.
 			 */
 			pinmux = <
-				PA11_GPTIM1_CH1
+				PA01_GPTIM1_CH1
 			>;
 		};
 	};
 	gptim2_pwm_default: gptim2_pwm_default {
 		group1 {
 			pinmux = <
-				PA10_GPTIM2_CH1
+				PA00_GPTIM2_CH1
 			>;
 			input-enable;
 		};
