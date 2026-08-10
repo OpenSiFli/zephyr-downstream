@@ -1,6 +1,8 @@
 sample:
   description: onchip audio codec example application
   name: audio codec sample
+common:
+  tags: audio
 tests:
   sample.drivers.audio.codec:
     filter: dt_nodelabel_enabled("audcodec")

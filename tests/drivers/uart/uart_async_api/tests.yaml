@@ -7,6 +7,8 @@ common:
     - max32657evkit/max32657/ns
     - max32658evkit/max32658
     - max32658evkit/max32658/ns
+    - sf32lb52_devkit_lcd  # <--- 在这里添加 sf32lb52 板子名称
+    - sf32lb52_devkit_lcd  
   tags:
     - drivers
     - uart

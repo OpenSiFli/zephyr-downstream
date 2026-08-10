@@ -1,0 +1,56 @@
+/*
+ * Copyright (c) 2026 SiFli
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* GPADC inputs PA31 (CH3), PA32 (CH4) and PA34 (CH6) are not muxed to any
+ * other peripheral on this board, so they are used as the ADC test inputs.
+ */
+
+/ {
+	zephyr,user {
+		io-channels = <&gpadc 3>, <&gpadc 4>, <&gpadc 6>;
+	};
+};
+
+&gpadc {
+	status = "okay";
+
+	pinctrl-0 = <&gpadc_default>;
+	pinctrl-names = "default";
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <0>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@4 {
+		reg = <4>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <0>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@6 {
+		reg = <6>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <0>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&pinctrl {
+	gpadc_default: gpadc_default {
+		group1 {
+			pinmux = <PA31_GPADC_CH3>, <PA32_GPADC_CH4>, <PA34_GPADC_CH6>;
+		};
+	};
+};
