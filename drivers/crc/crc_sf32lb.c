@@ -155,7 +155,29 @@ static int crc_sf32lb_begin(const struct device *dev, struct crc_ctx *ctx)
 
 	ll_crc_config_ctrl(crc, &ll_cfg);
 	ll_crc_set_init(crc, ctx->seed & mask);
-	ll_crc_set_poly(crc, ctx->polynomial & mask);
+
+	/*
+	 * The CRC engine takes the polynomial in normal (MSBit-first) form
+	 * and performs input/output reflection through rev_in/rev_out.
+	 * crc8()/crc16() pass the normal-form polynomial, while
+	 * crc8(..., reversed=true) / crc16_reflect() / crc16_ansi() pass
+	 * the reflected form with both reflect flags set. The reflected
+	 * form is only accepted when both input and output are reflected --
+	 * the only case where it can be honored by programming the
+	 * equivalent normal-form polynomial.
+	 */
+	uint32_t poly = ctx->polynomial;
+
+	if ((ctx->reversed & (CRC_FLAG_REVERSE_INPUT | CRC_FLAG_REVERSE_OUTPUT)) ==
+	    (CRC_FLAG_REVERSE_INPUT | CRC_FLAG_REVERSE_OUTPUT)) {
+		if (poly == CRC8_REFLECT_POLY) {
+			poly = CRC8_POLY;
+		} else if (poly == CRC16_REFLECT_POLY) {
+			poly = CRC16_POLY;
+		}
+	}
+
+	ll_crc_set_poly(crc, poly & mask);
 
 	/* Reset data register to the provided seed */
 	ll_crc_reset(crc);

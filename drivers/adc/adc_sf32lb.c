@@ -131,7 +131,7 @@ static uint16_t adc_sf32lb_mv_to_raw(int32_t mv)
 	return (uint16_t)raw;
 }
 
-static int adc_sf32lb_calib_apply_factory(struct adc_sf32lb_calib *calib,
+__maybe_unused static int adc_sf32lb_calib_apply_factory(struct adc_sf32lb_calib *calib,
 					  const struct sf32lb52x_efuse_adc_calib *factory,
 					  bool letter_series)
 {
@@ -178,7 +178,7 @@ static int adc_sf32lb_calib_apply_factory(struct adc_sf32lb_calib *calib,
 	return 0;
 }
 
-static bool adc_sf32lb_is_letter_series(const struct adc_sf32lb_config *config)
+__maybe_unused static bool adc_sf32lb_is_letter_series(const struct adc_sf32lb_config *config)
 {
 	const uint32_t idr = sys_read32(config->cfg_base + SYS_CFG_IDR);
 	const uint8_t rev_id = FIELD_GET(HPSYS_CFG_IDR_REVID, idr);
@@ -209,7 +209,7 @@ static void adc_sf32lb_apply_ldovref(const struct device *dev)
 
 static void adc_sf32lb_ensure_calibration(const struct device *dev)
 {
-	const struct adc_sf32lb_config *config = dev->config;
+	__maybe_unused const struct adc_sf32lb_config *config = dev->config;
 	struct adc_sf32lb_data *data = dev->data;
 	bool retry_later = false;
 
