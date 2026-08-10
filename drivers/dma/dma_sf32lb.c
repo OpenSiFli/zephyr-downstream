@@ -112,6 +112,20 @@ static void dma_sf32lb_isr(const struct device *dev, uint8_t channel)
 		status = -EINPROGRESS;
 	}
 
+	if (status == DMA_STATUS_COMPLETE || status < 0) {
+		ll_dmac_channel_t *chx = dma_sf32lb_get_channel(dmac, channel);
+
+		/* The DMAC does not clear the channel EN bit by itself once a
+		 * one-shot transfer finishes. Disable the channel on transfer
+		 * completion or error (unless circular mode is active, where the
+		 * channel must keep running) so it can be reconfigured from the
+		 * completion callback.
+		 */
+		if ((sys_read32((mem_addr_t)&chx->CCR) & DMAC_CCR1_CIRC) == 0U) {
+			ll_dmac_disable_channel(chx);
+		}
+	}
+
 	if (status != -EINPROGRESS && config->channels[channel].callback != NULL) {
 		config->channels[channel].callback(dev, config->channels[channel].user_data,
 						   channel, status);
