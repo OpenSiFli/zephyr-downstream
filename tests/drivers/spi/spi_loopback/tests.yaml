@@ -11,6 +11,11 @@ common:
     fixture: spi_loopback
 tests:
   drivers.spi.loopback: {}
+  drivers.spi.loopback.sf32lb52:
+    platform_allow:
+      - sf32lb52_devkit_lcd
+    extra_args:
+      - DTC_OVERLAY_FILE="boards/sf32lb52_devkit_lcd.overlay"
   drivers.spi.loopback.internal:
     filter: CONFIG_SPI_LOOPBACK_MODE_LOOP
   drivers.spi.loopback.lpspi.dma:
