@@ -28,6 +28,10 @@ config SOC_SF32LB52BU36
 	bool
 	select SOC_SERIES_SF32LB52X
 
+config SOC_SF32LB52BU56
+	bool
+	select SOC_SERIES_SF32LB52X
+
 config SOC_SF32LB52EUB6
 	bool
 	select SOC_SERIES_SF32LB52X
@@ -46,6 +50,7 @@ config SOC
 	default "sf32lb525uc6" if SOC_SF32LB525UC6
 	default "sf32lb527ud6" if SOC_SF32LB527UD6
 	default "sf32lb52bu36" if SOC_SF32LB52BU36
+	default "sf32lb52bu56" if SOC_SF32LB52BU56
 	default "sf32lb52eub6" if SOC_SF32LB52EUB6
 	default "sf32lb52guc6" if SOC_SF32LB52GUC6
 	default "sf32lb52jud6" if SOC_SF32LB52JUD6

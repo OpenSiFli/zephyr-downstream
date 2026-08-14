@@ -1,0 +1,37 @@
+# Copyright (c) 2025 Core Devices LLC
+# SPDX-License-Identifier: Apache-2.0
+
+identifier: sf32lb52_core_n16r16
+name: SF32LB52-Core_N16R16
+type: mcu
+arch: arm
+ram: 512
+flash: 16320
+toolchain:
+  - zephyr
+supported:
+  - adc
+  - audio
+  - bluetooth
+  - clock_control
+  - crc
+  - crypto
+  - display
+  - dma
+  - entropy
+  - flash
+  - gpio
+  - i2c
+  - memc
+  - mipi_dbi
+  - otp
+  - pinctrl
+  - pwm
+  - regulator
+  - reset
+  - rtc
+  - sensor
+  - spi
+  - uart
+  - watchdog
+vendor: sifli
