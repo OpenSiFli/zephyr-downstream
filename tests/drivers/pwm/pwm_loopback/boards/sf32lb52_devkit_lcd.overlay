@@ -5,17 +5,20 @@
 
 #include <zephyr/dt-bindings/pwm/pwm.h>
 
+/*
+ * PWM loopback capture test wiring (fixture "pwm_loopback"):
+ *
+ *   index 0 -> gptim1 PWM CH1 on PA01 (signal generation)
+ *   index 1 -> gptim2 PWM CH1 on PA00 (input capture)
+ *
+ * A jumper must physically connect PA01 to PA00. The SF32LB52 GPTs are
+ * 32-bit timers, so no timer width constraint applies here (unlike the
+ * STM32 boards which require a 32-bit timer at index 0).
+ */
 / {
 	pwm_loopback_0 {
 		compatible = "test-pwm-loopback";
 
-		/*
-		 * NOTE:
-		 * The first PWM must come from a 16-bit timer.
-		 *
-		 * Replace the controller/channel numbers according to
-		 * the SF32LB52 reference manual.
-		 */
 		pwms =
 			<&gptim1_pwm 0 0 PWM_POLARITY_NORMAL>,
 			<&gptim2_pwm 0 0 PWM_POLARITY_NORMAL>;
@@ -23,18 +26,16 @@
 };
 
 &pinctrl {
+	/* PWM output on gptim1 CH1 -> PA01 */
 	gptim1_pwm_default: gptim1_pwm_default {
 		group1 {
-			/*
-			 * TODO:
-			 * Replace with the actual PWM output pin if PA00
-			 * isn't free / already used elsewhere on this board.
-			 */
 			pinmux = <
 				PA01_GPTIM1_CH1
 			>;
 		};
 	};
+
+	/* PWM capture input on gptim2 CH1 -> PA00 (must be an input) */
 	gptim2_pwm_default: gptim2_pwm_default {
 		group1 {
 			pinmux = <

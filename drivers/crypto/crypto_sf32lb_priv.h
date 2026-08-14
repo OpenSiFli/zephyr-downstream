@@ -13,7 +13,7 @@
 #include <zephyr/drivers/clock_control/sf32lb.h>
 
 #include <register.h>
-#include <aes_acc.h>
+#include <regs/aes_acc.h>
 
 /* Register offsets using AES_ACC_TypeDef from register.h */
 #define AES_COMMAND_OFFSET      offsetof(AES_ACC_TypeDef, COMMAND)

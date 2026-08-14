@@ -19,7 +19,7 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/toolchain.h>
 
-#include <register.h>
+#include <ll_mpi.h>
 
 /*
  * NOTE: it is easy to get into a _race_ when XIP from QSPI NOR and trying
@@ -31,29 +31,6 @@
 
 #define MPI_FIFO_SIZE 64U
 
-#define MPI_CR     offsetof(MPI_TypeDef, CR)
-#define MPI_DR     offsetof(MPI_TypeDef, DR)
-#define MPI_DCR    offsetof(MPI_TypeDef, DCR)
-#define MPI_PSCLR  offsetof(MPI_TypeDef, PSCLR)
-#define MPI_SR     offsetof(MPI_TypeDef, SR)
-#define MPI_SCR    offsetof(MPI_TypeDef, SCR)
-#define MPI_CMDR1  offsetof(MPI_TypeDef, CMDR1)
-#define MPI_AR1    offsetof(MPI_TypeDef, AR1)
-#define MPI_ABR1   offsetof(MPI_TypeDef, ABR1)
-#define MPI_DLR1   offsetof(MPI_TypeDef, DLR1)
-#define MPI_CCR1   offsetof(MPI_TypeDef, CCR1)
-#define MPI_CMDR2  offsetof(MPI_TypeDef, CMDR2)
-#define MPI_DLR2   offsetof(MPI_TypeDef, DLR2)
-#define MPI_CCR2   offsetof(MPI_TypeDef, CCR2)
-#define MPI_HCMDR  offsetof(MPI_TypeDef, HCMDR)
-#define MPI_HRABR  offsetof(MPI_TypeDef, HRABR)
-#define MPI_HRCCR  offsetof(MPI_TypeDef, HRCCR)
-#define MPI_FIFOCR offsetof(MPI_TypeDef, FIFOCR)
-#define MPI_MISCR  offsetof(MPI_TypeDef, MISCR)
-#define MPI_CIR    offsetof(MPI_TypeDef, CIR)
-#define MPI_SMR    offsetof(MPI_TypeDef, SMR)
-#define MPI_SMKR   offsetof(MPI_TypeDef, SMKR)
-#define MPI_TIMR   offsetof(MPI_TypeDef, TIMR)
 
 #define MPI_CCRX_IMODE_SINGLE  FIELD_PREP(MPI_CCR1_IMODE_Msk, 1U)
 #define MPI_CCRX_ADMODE_NONE   FIELD_PREP(MPI_CCR1_ADMODE_Msk, 0U)
@@ -119,7 +96,7 @@ struct flash_sf32lb_mpi_qspi_nor_config {
 };
 
 struct flash_sf32lb_mpi_qspi_nor_data {
-	uintptr_t mpi;
+	MPI_TypeDef *mpi;
 	uintptr_t base;
 	uint32_t size;
 	struct sf32lb_dma_dt_spec dma;
@@ -155,51 +132,48 @@ static __ramfunc void *qspi_nor_memcpy(void *dst, const void *src, size_t len)
 static __ramfunc void qspi_nor_cinstr(const struct device *dev, uint8_t cmd)
 {
 	struct flash_sf32lb_mpi_qspi_nor_data *data = dev->data;
-	uint32_t ccr1;
 
 	/* single-line instruction-only read */
-	ccr1 = MPI_CCRX_IMODE_SINGLE;
-	sys_write32(ccr1, data->mpi + MPI_CCR1);
+	ll_mpi_write_command_config(data->mpi, LL_MPI_CS_1, MPI_CCRX_IMODE_SINGLE);
 
 	/* send command and wait for completion */
-	sys_write32(cmd, data->mpi + MPI_CMDR1);
+	ll_mpi_set_command_byte(data->mpi, LL_MPI_CS_1, cmd);
 
-	while (!sys_test_bit(data->mpi + MPI_SR, MPI_SR_TCF_Pos)) {
+	while (!ll_mpi_get_transfer_complete_flag(data->mpi)) {
 	}
 
-	sys_write32(MPI_SCR_TCFC, data->mpi + MPI_SCR);
+	ll_mpi_clear_transfer_complete_flag(data->mpi);
 }
 
 static __ramfunc void qspi_nor_cinstr_seq_ready_wait(const struct device *dev, uint8_t cmd,
 						     uint32_t ccrx, uint32_t addr)
 {
 	struct flash_sf32lb_mpi_qspi_nor_data *data = dev->data;
-	uint32_t cr;
 
 	/* configure CMD2 with status match */
-	sys_write32(MPI_CCRX_CMD_RDSR, data->mpi + MPI_CCR2);
-	sys_write32(SPI_NOR_CMD_RDSR, data->mpi + MPI_CMDR2);
-	sys_write32(0U, data->mpi + MPI_DLR2);
-	sys_write32(SPI_NOR_MEM_RDY_MASK, data->mpi + MPI_SMKR);
-	sys_write32(SPI_NOR_MEM_RDY_MATCH, data->mpi + MPI_SMR);
+	ll_mpi_write_command_config(data->mpi, LL_MPI_CS_2, MPI_CCRX_CMD_RDSR);
+	ll_mpi_set_command_byte(data->mpi, LL_MPI_CS_2, SPI_NOR_CMD_RDSR);
+	ll_mpi_set_data_length(data->mpi, LL_MPI_CS_2, 1U);
+	ll_mpi_set_status_match_mask(data->mpi, SPI_NOR_MEM_RDY_MASK);
+	ll_mpi_set_status_match_value(data->mpi, SPI_NOR_MEM_RDY_MATCH);
 
-	cr = sys_read32(data->mpi + MPI_CR);
-	cr |= MPI_CR_CMD2E | MPI_CR_SME2;
-	sys_write32(cr, data->mpi + MPI_CR);
+	ll_mpi_enable_command2(data->mpi);
+	ll_mpi_set_status_match_enable(data->mpi, LL_MPI_CS_2, 1U);
 
 	/* issue CMD1, wait for status match */
-	sys_write32(addr, data->mpi + MPI_AR1);
+	ll_mpi_set_address(data->mpi, LL_MPI_CS_1, addr);
 
-	sys_write32(ccrx, data->mpi + MPI_CCR1);
-	sys_write32(cmd, data->mpi + MPI_CMDR1);
-	while (!sys_test_bit(data->mpi + MPI_SR, MPI_SR_SMF_Pos)) {
+	ll_mpi_write_command_config(data->mpi, LL_MPI_CS_1, ccrx);
+	ll_mpi_set_command_byte(data->mpi, LL_MPI_CS_1, cmd);
+	while (!ll_mpi_get_status_match_flag(data->mpi)) {
 	}
 
-	sys_write32(MPI_SCR_SMFC | MPI_SCR_TCFC, data->mpi + MPI_SCR);
+	ll_mpi_clear_status_match_flag(data->mpi);
+	ll_mpi_clear_transfer_complete_flag(data->mpi);
 
 	/* disable CMD2 and status match 2 */
-	cr &= ~(MPI_CR_CMD2E | MPI_CR_SME2);
-	sys_write32(cr, data->mpi + MPI_CR);
+	ll_mpi_disable_command2(data->mpi);
+	ll_mpi_set_status_match_enable(data->mpi, LL_MPI_CS_2, 0U);
 }
 
 static __ramfunc void qspi_nor_read_fifo(const struct device *dev, uint8_t cmd, uint32_t ccrx,
@@ -209,31 +183,31 @@ static __ramfunc void qspi_nor_read_fifo(const struct device *dev, uint8_t cmd, 
 	uint8_t *cbuf = buf;
 
 	/* configure command */
-	sys_write32(ccrx, data->mpi + MPI_CCR1);
+	ll_mpi_write_command_config(data->mpi, LL_MPI_CS_1, ccrx);
 
 	/* read in FIFO max sized chunks */
 	do {
 		size_t chunk_len = MIN(len, MPI_FIFO_SIZE);
 
 		/* write length, address */
-		sys_write32(FIELD_PREP(MPI_DLR1_DLEN_Msk, chunk_len - 1U), data->mpi + MPI_DLR1);
-		sys_write32(addr, data->mpi + MPI_AR1);
+		ll_mpi_set_data_length(data->mpi, LL_MPI_CS_1, chunk_len);
+		ll_mpi_set_address(data->mpi, LL_MPI_CS_1, addr);
 
 		/* send command and wait for completion */
-		sys_write32(cmd, data->mpi + MPI_CMDR1);
-		while (!sys_test_bit(data->mpi + MPI_SR, MPI_SR_TCF_Pos)) {
+		ll_mpi_set_command_byte(data->mpi, LL_MPI_CS_1, cmd);
+		while (!ll_mpi_get_transfer_complete_flag(data->mpi)) {
 		}
-		sys_write32(MPI_SCR_TCFC, data->mpi + MPI_SCR);
+		ll_mpi_clear_transfer_complete_flag(data->mpi);
 
 		/* grab data */
 		for (size_t i = 0U; i < (chunk_len / 4U); i++) {
-			uint32_t dr = sys_read32(data->mpi + MPI_DR);
+			uint32_t dr = ll_mpi_read_data(data->mpi);
 
 			qspi_nor_memcpy(&cbuf[i * 4U], &dr, 4U);
 		}
 
 		if (chunk_len & 3U) {
-			uint32_t dr = sys_read32(data->mpi + MPI_DR);
+			uint32_t dr = ll_mpi_read_data(data->mpi);
 
 			qspi_nor_memcpy(&cbuf[chunk_len & ~3U], &dr, chunk_len & 3U);
 		}
@@ -255,21 +229,21 @@ static __ramfunc void qspi_nor_write_fifo(const struct device *dev, uint8_t cmd,
 		size_t chunk_len = MIN(len, MPI_FIFO_SIZE);
 
 		/* write length */
-		sys_write32(FIELD_PREP(MPI_DLR1_DLEN_Msk, chunk_len - 1U), data->mpi + MPI_DLR1);
+		ll_mpi_set_data_length(data->mpi, LL_MPI_CS_1, chunk_len);
 
 		/* push data */
 		for (size_t i = 0U; i < (chunk_len / 4U); i++) {
 			uint32_t dr = 0U;
 
 			qspi_nor_memcpy(&dr, &cbuf[i * 4U], 4U);
-			sys_write32(dr, data->mpi + MPI_DR);
+			ll_mpi_write_data(data->mpi, dr);
 		}
 
 		if (chunk_len & 3U) {
 			uint32_t dr = 0U;
 
 			qspi_nor_memcpy(&dr, &cbuf[chunk_len & ~3U], chunk_len & 3U);
-			sys_write32(dr, data->mpi + MPI_DR);
+			ll_mpi_write_data(data->mpi, dr);
 		}
 
 		qspi_nor_cinstr(dev, SPI_NOR_CMD_WREN);
@@ -407,7 +381,6 @@ static int flash_sf32lb_mpi_qspi_nor_write(const struct device *dev, off_t offse
 		k_spinlock_key_t key;
 		struct dma_status status;
 		uint16_t chunk_len;
-		uint32_t cr, ccr1;
 		const uint8_t *dma_data = cdata;
 
 		/* limit to page size, without crossing page boundary */
@@ -424,31 +397,26 @@ static int flash_sf32lb_mpi_qspi_nor_write(const struct device *dev, off_t offse
 		}
 
 		/* force flash into write mode */
-		ccr1 = data->ccrx_pp;
-		sys_write32(ccr1, data->mpi + MPI_CCR1);
+		ll_mpi_write_command_config(data->mpi, LL_MPI_CS_1, data->ccrx_pp);
 
 		/* enable DMA */
-		cr = sys_read32(data->mpi + MPI_CR);
-		cr |= MPI_CR_DMAE;
-		sys_write32(cr, data->mpi + MPI_CR);
+		ll_mpi_enable_dma(data->mpi);
 
 		/* configure data length */
-		sys_write32(FIELD_PREP(MPI_DLR1_DLEN_Msk, chunk_len - 1U), data->mpi + MPI_DLR1);
+		ll_mpi_set_data_length(data->mpi, LL_MPI_CS_1, chunk_len);
 
 		/* trigger DMA transfer */
-		ret = sf32lb_dma_reload_dt(&data->dma, (uintptr_t)dma_data, data->mpi + MPI_DR,
+		ret = sf32lb_dma_reload_dt(&data->dma, (uintptr_t)dma_data, (uintptr_t)&data->mpi->DR,
 					   chunk_len);
 		if (ret < 0) {
-			cr &= ~MPI_CR_DMAE;
-			sys_write32(cr, data->mpi + MPI_CR);
+			ll_mpi_disable_dma(data->mpi);
 			k_spin_unlock(&data->lock, key);
 			return ret;
 		}
 
 		ret = sf32lb_dma_start_dt(&data->dma);
 		if (ret < 0) {
-			cr &= ~MPI_CR_DMAE;
-			sys_write32(cr, data->mpi + MPI_CR);
+			ll_mpi_disable_dma(data->mpi);
 			k_spin_unlock(&data->lock, key);
 			return ret;
 		}
@@ -465,8 +433,7 @@ static int flash_sf32lb_mpi_qspi_nor_write(const struct device *dev, off_t offse
 		(void)sf32lb_dma_stop_dt(&data->dma);
 
 		/* disable DMA */
-		cr &= ~MPI_CR_DMAE;
-		sys_write32(cr, data->mpi + MPI_CR);
+		ll_mpi_disable_dma(data->mpi);
 
 		k_spin_unlock(&data->lock, key);
 
@@ -609,30 +576,21 @@ static __ramfunc int flash_sf32lb_mpi_qspi_nor_init(const struct device *dev)
 	struct flash_sf32lb_mpi_qspi_nor_data *data = dev->data;
 	struct dma_config config_dma = {0};
 	struct dma_block_config block_cfg = {0};
-	uint32_t val;
 	int ret;
 
 	if (!sf32lb_dma_is_ready_dt(&data->dma)) {
 		return -ENODEV;
 	}
 
-	val = sys_read32(data->mpi + MPI_FIFOCR);
-	val &= MPI_FIFOCR_TXSLOTS_Msk;
-	val |= FIELD_PREP(MPI_FIFOCR_TXSLOTS_Msk, 1U);
-	sys_write32(val, data->mpi + MPI_FIFOCR);
+	ll_mpi_set_fifo_tx_slots(data->mpi, 1U);
 
-	val = sys_read32(data->mpi + MPI_MISCR);
-	val &= ~MPI_MISCR_RXCLKINV_Msk;
-	val |= FIELD_PREP(MPI_MISCR_RXCLKINV_Msk, !!data->invert_rx_clk);
-	sys_write32(val, data->mpi + MPI_MISCR);
+	ll_mpi_set_rx_clk_invert(data->mpi, !!data->invert_rx_clk);
 
-	sys_write32(data->psclr, data->mpi + MPI_PSCLR);
+	ll_mpi_set_clock_div(data->mpi, data->psclr);
 
 	/* enable QSPI (non-dual mode) */
-	val = sys_read32(data->mpi + MPI_CR);
-	val &= ~MPI_CR_DFM;
-	val |= MPI_CR_EN;
-	sys_write32(val, data->mpi + MPI_CR);
+	ll_mpi_set_dual_flash_mode(data->mpi, 0U);
+	ll_mpi_enable(data->mpi);
 
 	/* enable QER */
 	if (data->qer != JESD216_DW15_QER_VAL_NONE) {
@@ -674,12 +632,9 @@ static __ramfunc int flash_sf32lb_mpi_qspi_nor_init(const struct device *dev)
 	}
 
 	/* configure AHB read command */
-	sys_write32(data->ccrx_read, data->mpi + MPI_HRCCR);
+	ll_mpi_set_ahb_read_config(data->mpi, data->ccrx_read);
 
-	val = sys_read32(data->mpi + MPI_HCMDR);
-	val &= ~MPI_HCMDR_RCMD_Msk;
-	val |= FIELD_PREP(MPI_HCMDR_RCMD_Msk, data->cmd_read);
-	sys_write32(val, data->mpi + MPI_HCMDR);
+	ll_mpi_set_ahb_read_command(data->mpi, data->cmd_read);
 
 	/* perform initial DMA configuration (so we can just reload) */
 	sf32lb_dma_config_init_dt(&data->dma, &config_dma);
@@ -723,7 +678,7 @@ static __ramfunc int flash_sf32lb_mpi_qspi_nor_init(const struct device *dev)
 	};                                                                                         \
                                                                                                    \
 	static struct flash_sf32lb_mpi_qspi_nor_data data##n = {                                   \
-		.mpi = DT_INST_REG_ADDR_BY_NAME(n, ctrl),                                          \
+		.mpi = (MPI_TypeDef *)DT_INST_REG_ADDR_BY_NAME(n, ctrl),                                          \
 		.base = DT_INST_REG_ADDR_BY_NAME(n, nor),                                          \
 		.size = DT_PROP(DT_INST_CHILD(n, flash_0), size) / 8U,                             \
 		.dma = SF32LB_DMA_DT_INST_SPEC_GET(n),                                             \
