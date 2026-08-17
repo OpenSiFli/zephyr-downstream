@@ -384,8 +384,8 @@ static int uart_sf32lb_irq_is_pending(const struct device *dev)
 	const struct uart_sf32lb_config *config = dev->config;
 	USART_TypeDef *uart = uart_sf32lb_regs(config);
 
-	/* LL gap: ll_usart exposes individual flag readers, not aggregate ISR state. */
-	return sys_read32((mem_addr_t)&uart->ISR) == 0U ? 0 : 1;
+	/* Aggregate ISR snapshot: any set flag means an IRQ is pending. */
+	return ll_usart_get_isr(uart) == 0U ? 0 : 1;
 }
 
 static void uart_sf32lb_irq_callback_set(const struct device *dev, uart_irq_callback_user_data_t cb,

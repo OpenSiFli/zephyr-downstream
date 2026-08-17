@@ -60,74 +60,57 @@ static inline uintptr_t i2c_sf32lb_fifo_addr(const struct i2c_sf32lb_config *con
 
 static inline uint32_t i2c_sf32lb_get_status(I2C_TypeDef *i2c)
 {
-	/* LL gap: ll_i2c exposes per-flag readers, not an aggregate SR snapshot. */
-	return sys_read32((mem_addr_t)&i2c->SR);
+	return ll_i2c_get_status(i2c);
 }
 
 static inline void i2c_sf32lb_clear_status(I2C_TypeDef *i2c, uint32_t flags)
 {
-	/* LL gap: the address phase clears the complete latched SR snapshot. */
-	sys_write32(flags, (mem_addr_t)&i2c->SR);
+	ll_i2c_clear_status(i2c, flags);
 }
 
 static inline void i2c_sf32lb_disable_all_irqs(I2C_TypeDef *i2c)
 {
-	/* LL gap: no helper clears the full IER register in one operation. */
-	sys_write32(0, (mem_addr_t)&i2c->IER);
+	ll_i2c_disable_all_irqs(i2c);
 }
 
 static inline void i2c_sf32lb_write_data(I2C_TypeDef *i2c, uint8_t data)
 {
-	/* LL gap: ll_i2c_transmit_byte() also starts TB; this path composes TCR separately. */
-	sys_write32(data, (mem_addr_t)&i2c->DBR);
+	ll_i2c_write_data(i2c, data);
 }
 
 static inline void i2c_sf32lb_write_tcr(I2C_TypeDef *i2c, uint32_t tcr)
 {
-	/* LL gap: no helper writes the combined START/TB/NACK/STOP command atomically. */
-	sys_write32(tcr, (mem_addr_t)&i2c->TCR);
+	ll_i2c_write_tcr(i2c, tcr);
 }
 
 static inline void i2c_sf32lb_enable_msde(I2C_TypeDef *i2c)
 {
-	/* LL gap: ll_i2c_config_master_runtime() also rewrites SCLPP. */
-	sys_set_bits((mem_addr_t)&i2c->CR, I2C_CR_MSDE);
+	ll_i2c_enable_msde(i2c);
 }
 
 static inline void i2c_sf32lb_disable_msde(I2C_TypeDef *i2c)
 {
-	/* LL gap: no standalone MSDE clear helper. */
-	sys_clear_bits((mem_addr_t)&i2c->CR, I2C_CR_MSDE);
+	ll_i2c_disable_msde(i2c);
 }
 
 static inline void i2c_sf32lb_config_speed_mode(I2C_TypeDef *i2c, uint32_t mode)
 {
-	mem_addr_t cr = (mem_addr_t)&i2c->CR;
-	uint32_t value;
-
-	/* LL gap: ll_i2c_config_timing() would also rewrite LCR/WCR timing registers. */
-	value = sys_read32(cr);
-	value &= ~I2C_CR_MODE;
-	value |= mode;
-	sys_write32(value, cr);
+	ll_i2c_set_speed_mode(i2c, mode);
 }
 
 static inline uint32_t i2c_sf32lb_get_speed_mode(I2C_TypeDef *i2c)
 {
-	/* LL gap: no speed-mode getter exists without reading CR. */
-	return sys_read32((mem_addr_t)&i2c->CR) & I2C_CR_MODE;
+	return ll_i2c_get_speed_mode(i2c);
 }
 
 static inline void i2c_sf32lb_request_reset(I2C_TypeDef *i2c)
 {
-	/* LL gap: no software reset request helper in ll_i2c.h. */
-	sys_set_bits((mem_addr_t)&i2c->CR, I2C_CR_RSTREQ);
+	ll_i2c_request_reset(i2c);
 }
 
 static inline uint32_t i2c_sf32lb_is_reset_requested(I2C_TypeDef *i2c)
 {
-	/* LL gap: no software reset status helper in ll_i2c.h. */
-	return sys_read32((mem_addr_t)&i2c->CR) & I2C_CR_RSTREQ;
+	return ll_i2c_is_reset_requested(i2c);
 }
 
 static inline void i2c_sf32lb_enable_transfer_irqs(I2C_TypeDef *i2c, bool tx)

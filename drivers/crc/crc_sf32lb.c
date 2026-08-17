@@ -181,8 +181,7 @@ static int crc_sf32lb_begin(const struct device *dev, struct crc_ctx *ctx)
 
 	/* Reset data register to the provided seed */
 	ll_crc_reset(crc);
-	/* LL gap: ll_crc_reset() asserts RESET but does not expose a deassert helper. */
-	sys_clear_bits((mem_addr_t)&crc->CR, CRC_CR_RESET);
+	ll_crc_release_reset(crc);
 
 	ctx->state = CRC_STATE_IN_PROGRESS;
 	ctx->result = ctx->seed & mask;

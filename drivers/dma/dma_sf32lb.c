@@ -389,9 +389,9 @@ static int dma_sf32lb_start(const struct device *dev, uint32_t channel)
 	/* clear all transfer flags */
 	dma_sf32lb_clear_all_flags(dmac, channel);
 
-	/* LL gap: ll_dmac.h has config-time IRQ bits but no post-config IRQ enable helpers. */
 	if (config->channels[channel].callback != NULL) {
-		sys_set_bits((mem_addr_t)&chx->CCR, DMAC_CCR1_TCIE | DMAC_CCR1_TEIE);
+		ll_dmac_enable_it_tc(chx);
+		ll_dmac_enable_it_te(chx);
 	}
 	ll_dmac_enable_channel(chx);
 	atomic_set_bit(data->status, channel);
@@ -414,8 +414,8 @@ static int dma_sf32lb_stop(const struct device *dev, uint32_t channel)
 
 	/* disable DMA and complete/error IRQs */
 	ll_dmac_disable_channel(chx);
-	/* LL gap: ll_dmac.h has config-time IRQ bits but no post-config IRQ disable helpers. */
-	sys_clear_bits((mem_addr_t)&chx->CCR, DMAC_CCR1_TCIE | DMAC_CCR1_TEIE);
+	ll_dmac_disable_it_tc(chx);
+	ll_dmac_disable_it_te(chx);
 
 	atomic_clear_bit(data->status, channel);
 
@@ -437,8 +437,7 @@ static int dma_sf32lb_get_status(const struct device *dev, uint32_t channel,
 	}
 
 	stat->dir = config->channels[channel].direction;
-	/* LL gap: ll_dmac.h exposes NDT writes but not a pending-count read helper. */
-	stat->pending_length = sys_read32((mem_addr_t)&chx->CNDTR) & DMAC_CNDTR1_NDT;
+	stat->pending_length = ll_dmac_get_ndt(chx);
 	stat->busy = atomic_test_bit(data->status, channel) && (stat->pending_length != 0U);
 
 	return 0;
@@ -467,9 +466,9 @@ static int dma_sf32lb_init(const struct device *dev)
 		ll_dmac_channel_t *chx = dma_sf32lb_get_channel(dmac, channel);
 
 		ll_dmac_disable_channel(chx);
-		/* LL gap: ll_dmac.h has config-time IRQ bits but no post-config IRQ disable helpers. */
-		sys_clear_bits((mem_addr_t)&chx->CCR,
-			       DMAC_CCR1_TCIE | DMAC_CCR1_HTIE | DMAC_CCR1_TEIE);
+		ll_dmac_disable_it_tc(chx);
+		ll_dmac_disable_it_ht(chx);
+		ll_dmac_disable_it_te(chx);
 	}
 
 	config->irq_configure();

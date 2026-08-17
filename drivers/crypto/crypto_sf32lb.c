@@ -97,22 +97,17 @@ static void crypto_sifli_isr(const struct device *dev)
 #endif /* CONFIG_CRYPTO_SIFLI_AES */
 
 #if defined(CONFIG_CRYPTO_SIFLI_HASH)
-	/* LL gap: HASH registers share AES_ACC but are not covered by ll_aes.h. */
 	/* Handle HASH interrupts */
 	if (irq_status & (AES_ACC_IRQ_HASH_DONE_STAT | AES_ACC_IRQ_HASH_BUS_ERR_STAT |
 			  AES_ACC_IRQ_HASH_PAD_ERR_STAT)) {
 		/* Clear HASH IRQ status */
-		sys_write32(irq_status &
-				    (AES_ACC_IRQ_HASH_DONE_STAT | AES_ACC_IRQ_HASH_BUS_ERR_STAT |
-				     AES_ACC_IRQ_HASH_PAD_ERR_STAT),
-			    base + AES_IRQ_OFFSET);
+		ll_aes_clear_irq(aes, irq_status & (LL_AES_IRQ_HASH_DONE | LL_AES_IRQ_HASH_BUS_ERR |
+						      LL_AES_IRQ_HASH_PAD_ERR));
 
-		/* Disable HASH IRQ mask */
-		sys_write32(sys_read32(base + AES_SETTING_OFFSET) &
-				    ~(AES_ACC_SETTING_HASH_DONE_MASK |
-				      AES_ACC_SETTING_HASH_BUS_ERR_MASK |
-				      AES_ACC_SETTING_HASH_PAD_ERR_MASK),
-			    base + AES_SETTING_OFFSET);
+		/* Disable HASH IRQ masks */
+		ll_aes_hash_disable_it_done(aes);
+		ll_aes_hash_disable_it_bus_err(aes);
+		ll_aes_hash_disable_it_pad_err(aes);
 
 		/* Check for errors */
 		if (irq_status & (AES_ACC_IRQ_HASH_BUS_ERR_STAT | AES_ACC_IRQ_HASH_PAD_ERR_STAT)) {
@@ -166,14 +161,7 @@ static uint32_t crypto_sifli_aes_ll_mode(uint32_t mode)
 
 static void crypto_sifli_aes_set_op(AES_ACC_TypeDef *aes, bool enc)
 {
-	mem_addr_t aes_setting = (mem_addr_t)&aes->AES_SETTING;
-	uint32_t setting;
-
-	/* LL gap: ll_aes.h has full core config but no standalone operation setter. */
-	setting = sys_read32(aes_setting);
-	setting &= ~AES_ACC_AES_SETTING_AES_OP_MODE;
-	setting |= enc ? LL_AES_OP_ENCRYPT : LL_AES_OP_DECRYPT;
-	sys_write32(setting, aes_setting);
+	ll_aes_set_op_mode(aes, enc ? 1U : 0U);
 }
 
 static inline bool crypto_sifli_aes_busy(uint32_t base)
@@ -186,8 +174,7 @@ static void crypto_sifli_aes_reset(uint32_t base)
 	AES_ACC_TypeDef *aes = (AES_ACC_TypeDef *)base;
 
 	ll_aes_reset(aes);
-	/* LL gap: ll_aes_reset() asserts reset but does not expose a deassert helper. */
-	sys_clear_bits((mem_addr_t)&aes->COMMAND, AES_ACC_COMMAND_AES_ACC_RESET);
+	ll_aes_release_reset(aes);
 }
 
 static int crypto_sifli_aes_init(uint32_t base, const uint32_t *key, int key_size,
@@ -818,15 +805,15 @@ static int crypto_sifli_session_free(const struct device *dev, struct cipher_ctx
 
 static inline bool crypto_sifli_hash_busy(uint32_t base)
 {
-	/* LL gap: HASH busy status is not covered by ll_aes.h. */
-	return sys_test_bit(base + AES_STATUS_OFFSET, AES_ACC_STATUS_HASH_BUSY_Pos);
+	return ll_aes_is_hash_busy((AES_ACC_TypeDef *)base) != 0U;
 }
 
 static void crypto_sifli_hash_reset(uint32_t base)
 {
-	/* LL gap: HASH reset is not covered by ll_aes.h. */
-	sys_set_bit(base + AES_COMMAND_OFFSET, AES_ACC_COMMAND_HASH_RESET_Pos);
-	sys_clear_bit(base + AES_COMMAND_OFFSET, AES_ACC_COMMAND_HASH_RESET_Pos);
+	AES_ACC_TypeDef *aes = (AES_ACC_TypeDef *)base;
+
+	ll_aes_hash_reset(aes);
+	ll_aes_hash_release_reset(aes);
 }
 
 static int crypto_sifli_hash_get_unused_session_index(const struct device *dev)
@@ -854,7 +841,6 @@ static int crypto_sifli_hash_handler(struct hash_ctx *ctx, struct hash_pkt *pkt,
 	struct crypto_sifli_hash_session *session = CRYPTO_SIFLI_HASH_SESSN(ctx);
 	const struct crypto_sifli_config *config = dev->config;
 	uintptr_t base = config->base;
-	uint32_t hash_setting;
 
 	if (!pkt || !pkt->out_buf) {
 		LOG_ERR("Invalid packet buffers");
@@ -882,21 +868,17 @@ static int crypto_sifli_hash_handler(struct hash_ctx *ctx, struct hash_pkt *pkt,
 
 	k_sem_take(&data->device_sem, K_FOREVER);
 
-	/* LL gap: HASH setup/DMA/start/result registers are not covered by ll_aes.h. */
 	/* Reset hash module */
 	crypto_sifli_hash_reset(base);
 
 	/* Step 1: Set algorithm mode */
-	hash_setting = (session->algo << AES_ACC_HASH_SETTING_HASH_MODE_Pos) &
-		       AES_ACC_HASH_SETTING_HASH_MODE_Msk;
-	sys_write32(hash_setting, base + AES_HASH_SETTING_OFFSET);
+	ll_aes_hash_set_mode((AES_ACC_TypeDef *)base, session->algo);
 
 	/* Step 2: Trigger IV load (use default IV since DFT_IV_SEL is not set) */
-	hash_setting |= AES_ACC_HASH_SETTING_HASH_IV_LOAD;
-	sys_write32(hash_setting, base + AES_HASH_SETTING_OFFSET);
+	ll_aes_hash_iv_load((AES_ACC_TypeDef *)base);
 
-	LOG_DBG("HASH_SETTING after init: 0x%08x (wrote 0x%08x)",
-		sys_read32(base + AES_HASH_SETTING_OFFSET), hash_setting);
+	LOG_DBG("HASH_SETTING after init: 0x%08x",
+		sys_read32(base + AES_HASH_SETTING_OFFSET));
 
 	/* Flush data cache before DMA if there's data to process */
 	if (pkt->in_len > 0U) {
@@ -904,24 +886,24 @@ static int crypto_sifli_hash_handler(struct hash_ctx *ctx, struct hash_pkt *pkt,
 	}
 
 	/* Set input DMA address and size */
-	sys_write32((uint32_t)pkt->in_buf, base + AES_HASH_DMA_IN_OFFSET);
-	sys_write32(pkt->in_len, base + AES_HASH_DMA_DATA_OFFSET);
-	LOG_DBG("DMA_IN=0x%08x, DMA_DATA=0x%08x", sys_read32(base + AES_HASH_DMA_IN_OFFSET),
+	ll_aes_hash_set_dma_in((AES_ACC_TypeDef *)base, (uint32_t)pkt->in_buf);
+	ll_aes_hash_set_dma_data_size((AES_ACC_TypeDef *)base, pkt->in_len);
+	LOG_DBG("DMA_IN=0x%08x, DMA_DATA=0x%08x",
+		sys_read32(base + AES_HASH_DMA_IN_OFFSET),
 		sys_read32(base + AES_HASH_DMA_DATA_OFFSET));
 
-	/* Enable padding for final block - use OR to preserve settings */
-	sys_write32(sys_read32(base + AES_HASH_SETTING_OFFSET) | AES_ACC_HASH_SETTING_DO_PADDING,
-		    base + AES_HASH_SETTING_OFFSET);
+	/* Enable padding for final block - preserve settings via OR. */
+	ll_aes_hash_padding_enable((AES_ACC_TypeDef *)base);
 	LOG_DBG("HASH_SETTING before start: 0x%08x", sys_read32(base + AES_HASH_SETTING_OFFSET));
 
 #if defined(CONFIG_CRYPTO_SIFLI_ASYNC)
 	/* Clear pending IRQ */
-	sys_write32(sys_read32(base + AES_IRQ_OFFSET), base + AES_IRQ_OFFSET);
+	ll_aes_clear_irq((AES_ACC_TypeDef *)base, ll_aes_get_irq_status((AES_ACC_TypeDef *)base));
 
 	/* Enable HASH IRQ masks */
-	sys_write32(sys_read32(base + AES_SETTING_OFFSET) | AES_ACC_SETTING_HASH_DONE_MASK |
-			    AES_ACC_SETTING_HASH_BUS_ERR_MASK | AES_ACC_SETTING_HASH_PAD_ERR_MASK,
-		    base + AES_SETTING_OFFSET);
+	ll_aes_hash_enable_it_done((AES_ACC_TypeDef *)base);
+	ll_aes_hash_enable_it_bus_err((AES_ACC_TypeDef *)base);
+	ll_aes_hash_enable_it_pad_err((AES_ACC_TypeDef *)base);
 
 	/* Store context for ISR */
 	data->hash_pkt = pkt;
@@ -930,18 +912,16 @@ static int crypto_sifli_hash_handler(struct hash_ctx *ctx, struct hash_pkt *pkt,
 
 	/* Start hash operation */
 	barrier_dsync_fence_full();
-	sys_write32(AES_ACC_COMMAND_HASH_START, base + AES_COMMAND_OFFSET);
+	ll_aes_hash_start((AES_ACC_TypeDef *)base);
 
 	if (data->hash_cb == NULL) {
 		/* Wait for completion via semaphore */
 		if (k_sem_take(&data->sync_sem, K_USEC(CRYPTO_SIFLI_TIMEOUT_US)) != 0) {
 			LOG_ERR("HASH operation timeout");
-			/* Disable IRQ mask */
-			sys_write32(sys_read32(base + AES_SETTING_OFFSET) &
-					    ~(AES_ACC_SETTING_HASH_DONE_MASK |
-					      AES_ACC_SETTING_HASH_BUS_ERR_MASK |
-					      AES_ACC_SETTING_HASH_PAD_ERR_MASK),
-				    base + AES_SETTING_OFFSET);
+			/* Disable IRQ masks */
+			ll_aes_hash_disable_it_done((AES_ACC_TypeDef *)base);
+			ll_aes_hash_disable_it_bus_err((AES_ACC_TypeDef *)base);
+			ll_aes_hash_disable_it_pad_err((AES_ACC_TypeDef *)base);
 			data->hash_pkt = NULL;
 			k_sem_give(&data->device_sem);
 			return -ETIMEDOUT;
@@ -959,7 +939,7 @@ static int crypto_sifli_hash_handler(struct hash_ctx *ctx, struct hash_pkt *pkt,
 #else
 	/* Start hash operation */
 	barrier_dsync_fence_full();
-	sys_write32(AES_ACC_COMMAND_HASH_START, base + AES_COMMAND_OFFSET);
+	ll_aes_hash_start((AES_ACC_TypeDef *)base);
 
 	/* Wait for completion */
 	if (!WAIT_FOR(crypto_sifli_hash_busy(base) != true, CRYPTO_SIFLI_TIMEOUT_US,
@@ -970,12 +950,12 @@ static int crypto_sifli_hash_handler(struct hash_ctx *ctx, struct hash_pkt *pkt,
 	}
 
 	/* Check for errors */
-	uint32_t irq = sys_read32(base + AES_IRQ_OFFSET);
+	uint32_t irq = ll_aes_get_irq_status((AES_ACC_TypeDef *)base);
 
 	/* Clear IRQ status */
-	sys_write32(irq & (AES_ACC_IRQ_HASH_BUS_ERR_STAT | AES_ACC_IRQ_HASH_PAD_ERR_STAT |
-			   AES_ACC_IRQ_HASH_DONE_STAT),
-		    base + AES_IRQ_OFFSET);
+	ll_aes_clear_irq((AES_ACC_TypeDef *)base,
+			 irq & (AES_ACC_IRQ_HASH_BUS_ERR_STAT | AES_ACC_IRQ_HASH_PAD_ERR_STAT |
+				AES_ACC_IRQ_HASH_DONE_STAT));
 
 	if (irq & (AES_ACC_IRQ_HASH_BUS_ERR_STAT | AES_ACC_IRQ_HASH_PAD_ERR_STAT)) {
 		LOG_ERR("HASH error: IRQ=0x%08x", irq);
