@@ -129,9 +129,8 @@ static inline int gpio_sf32lb_configure(const struct device *port, gpio_pin_t pi
 	/* configure pad settings in PINMUX */
 	ll_pinmux_set_fsel(pinmux, pin, 0U);
 	if (has_mode_bit) {
-		/* LL gap: PA39-PA42 reuse this bit as I2C mode, not generic slew. */
-		sys_clear_bits((mem_addr_t)ll_pinmux_get_pad_reg(pinmux, pin),
-			       PINMUX_PAD_XXYY_MODE_I2C);
+		/* PA39-PA42 reuse the SR bit as I2C mode; clear it via the pad API. */
+		ll_pinmux_set_slew_rate(pinmux, pin, 0U);
 	}
 
 	if ((flags & GPIO_INPUT) != 0U) {

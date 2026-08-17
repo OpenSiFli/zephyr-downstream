@@ -63,8 +63,7 @@ static inline uintptr_t spi_sf32lb_data_addr(const struct spi_sf32lb_config *cfg
 
 static inline uint32_t spi_sf32lb_get_status(SPI_TypeDef *spi)
 {
-	/* LL gap: ll_spi exposes per-flag readers, not an aggregate STATUS snapshot. */
-	return sys_read32((mem_addr_t)&spi->STATUS);
+	return ll_spi_get_status(spi);
 }
 
 static inline void spi_sf32lb_disable_transfer_irqs(SPI_TypeDef *spi)
@@ -72,8 +71,8 @@ static inline void spi_sf32lb_disable_transfer_irqs(SPI_TypeDef *spi)
 	ll_spi_disable_it_tx_threshold(spi);
 	ll_spi_disable_it_rx_threshold(spi);
 	ll_spi_disable_it_timeout(spi);
-	/* LL gap: no helpers for EBCEI/PINTE enable bits. */
-	sys_clear_bits((mem_addr_t)&spi->INTE, SPI_INTE_EBCEI | SPI_INTE_PINTE);
+	ll_spi_disable_it_ebcei(spi);
+	ll_spi_disable_it_pinte(spi);
 }
 
 static inline void spi_sf32lb_clear_error_flags(SPI_TypeDef *spi)
@@ -91,12 +90,8 @@ static inline void spi_sf32lb_clear_poll_flags(SPI_TypeDef *spi)
 
 static inline void spi_sf32lb_pulse_fifo_reset(SPI_TypeDef *spi)
 {
-	/*
-	 * LL gap: TSRE/RSRE are documented as DMA request helpers in ll_spi.h,
-	 * but this driver uses the same bits as FIFO reset pulses.
-	 */
-	sys_set_bits((mem_addr_t)&spi->FIFO_CTRL, SPI_FIFO_CTRL_TSRE | SPI_FIFO_CTRL_RSRE);
-	sys_clear_bits((mem_addr_t)&spi->FIFO_CTRL, SPI_FIFO_CTRL_TSRE | SPI_FIFO_CTRL_RSRE);
+	/* TSRE/RSRE are used here as FIFO reset pulses. */
+	ll_spi_pulse_fifo_reset(spi);
 }
 
 static bool spi_sf32lb_transfer_ongoing(struct spi_sf32lb_data *data)

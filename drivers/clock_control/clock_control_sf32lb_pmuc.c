@@ -67,9 +67,6 @@ static void sf32lb_pmuc_select_lpclk(const struct sf32lb_pmuc_clk_config *config
 static int sf32lb_pmuc_lxt32_on(const struct sf32lb_pmuc_clk_config *config)
 {
 	PMUC_TypeDef *pmuc = (PMUC_TypeDef *)config->base;
-	mem_addr_t lxt_cr = (mem_addr_t)&pmuc->LXT_CR;
-	uint32_t mask;
-	uint32_t value;
 	int ret;
 
 	ret = pinctrl_apply_state(config->pcfg, PINCTRL_STATE_DEFAULT);
@@ -77,16 +74,8 @@ static int sf32lb_pmuc_lxt32_on(const struct sf32lb_pmuc_clk_config *config)
 		return ret;
 	}
 
-	/* Configure bias current and enable in a single write */
-	/* LL gap: ll_pmuc exposes LXT enable/ready, not BM/AMP_BM/RSN tuning. */
-	mask = PMUC_LXT_CR_EN | PMUC_LXT_CR_RSN | PMUC_LXT_CR_CAP_SEL | PMUC_LXT_CR_BM_Msk |
-	       PMUC_LXT_CR_AMP_BM_Msk;
-	value = sys_read32(lxt_cr);
-	value &= ~mask;
-	value |= FIELD_PREP(PMUC_LXT_CR_BM_Msk, PMUC_LXT_BM_VALUE) |
-		 FIELD_PREP(PMUC_LXT_CR_AMP_BM_Msk, PMUC_LXT_AMP_BM_VALUE) | PMUC_LXT_CR_EN |
-		 PMUC_LXT_CR_RSN;
-	sys_write32(value, lxt_cr);
+	/* Configure bias current, enable and RSN in a single write */
+	ll_pmuc_config_lxt32(pmuc, PMUC_LXT_BM_VALUE, PMUC_LXT_AMP_BM_VALUE, 0U, 1U);
 
 	while (ll_pmuc_is_lxt32_ready(pmuc) == 0U) {
 	}
@@ -98,8 +87,8 @@ static int sf32lb_pmuc_lxt32_off(const struct sf32lb_pmuc_clk_config *config)
 {
 	PMUC_TypeDef *pmuc = (PMUC_TypeDef *)config->base;
 
-	/* LL gap: disabling LXT32 here must clear RSN together with EN. */
-	sys_clear_bits((mem_addr_t)&pmuc->LXT_CR, PMUC_LXT_CR_EN | PMUC_LXT_CR_RSN);
+	/* Disabling LXT32 must clear RSN together with EN. */
+	ll_pmuc_disable_lxt32_rsn(pmuc);
 
 	return 0;
 }

@@ -15,6 +15,7 @@
 #include <zephyr/sys/sys_io.h>
 
 #include <ll_gpadc.h>
+#include <ll_hpsys_cfg.h>
 
 #if defined(CONFIG_ADC_SF32LB_CALIBRATION)
 #include <zephyr/drivers/otp/sifli_sf32lb52x_efuse.h>
@@ -572,28 +573,22 @@ static int adc_sf32lb_init(const struct device *dev)
 	/* Allow input path to settle after pinmux configuration. */
 	k_busy_wait(SF32LB_ADC_WAIT_TIME_US);
 
-	/* LL gap: HPSYS_CFG ANAU bandgap control is not covered by ll_gpadc.h. */
-	sys_set_bit(config->cfg_base + SYS_CFG_ANAU_CR, HPSYS_CFG_ANAU_CR_EN_BG_Pos);
+	/* Enable the ANAU bandgap shared by GPADC. */
+	ll_cfg_anau_bandgap_enable((HPSYS_CFG_TypeDef *)config->cfg_base);
 
-	/* LL gap: GPIO trigger enable has no GPADC LL helper. */
-	sys_clear_bits((mem_addr_t)&gpadc->ADC_CTRL_REG, GPADC_ADC_CTRL_REG_GPIO_TRIG_EN);
+	/* Disable GPIO-triggered sampling; timer trigger is configured next. */
+	ll_gpadc_disable_gpio_trigger(gpadc);
 	ll_gpadc_config_trigger(gpadc, &trigger_config);
 	ll_gpadc_config_mode(gpadc, &mode_config);
 	ll_gpadc_config_clock(gpadc, &clock_config);
 
 	/*
-	 * LL gap: update only key ADC_CFG_REG1 fields instead of full analog reconfig.
+	 * Update only key ADC_CFG_REG1 fields instead of full analog reconfig.
 	 * - ANAU_GPADC_EN_V18 is only used when GPADC is powered by an external 1.8V supply,
 	 *   so it is intentionally not forced here.
 	 * - ANAU_GPADC_CMM affects conversion precision; set it explicitly to the validated value.
 	 */
-	uint32_t adc_cfg_reg1 = sys_read32((mem_addr_t)&gpadc->ADC_CFG_REG1);
-
-	adc_cfg_reg1 &= ~GPADC_ADC_CFG_REG1_ANAU_GPADC_CMM;
-	adc_cfg_reg1 |= GPADC_ADC_CFG_REG1_ANAU_GPADC_SE;
-	adc_cfg_reg1 |= (ADC_SF32LB_ANAU_CMM_VALUE << GPADC_ADC_CFG_REG1_ANAU_GPADC_CMM_Pos) &
-			GPADC_ADC_CFG_REG1_ANAU_GPADC_CMM;
-	sys_write32(adc_cfg_reg1, (mem_addr_t)&gpadc->ADC_CFG_REG1);
+	ll_gpadc_config_analog_cfg1(gpadc, ADC_SF32LB_ANAU_CMM_VALUE, 1U);
 	adc_sf32lb_disable_analog(dev);
 
 	/* disable all slots */

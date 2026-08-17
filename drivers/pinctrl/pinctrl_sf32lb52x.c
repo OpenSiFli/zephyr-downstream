@@ -14,6 +14,7 @@
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
 
+#include <ll_hpsys_cfg.h>
 #include <ll_pinmux.h>
 
 struct sf32lb52x_pinctrl_config {
@@ -80,15 +81,9 @@ static int pinctrl_configure_pin(pinctrl_soc_pin_t pin)
 	/* configure HPSYS_CFG *_PINR if applicable */
 	pinr_offset = FIELD_GET(SF32LB_PINR_OFFSET_MSK, pin);
 	if (pinr_offset != 0U) {
-		uint32_t pinr_msk;
-		uint32_t val;
-
-		/* LL gap: dynamic per-field PINR updates are not covered by ll_hpsys_cfg.h. */
-		pinr_msk = 0xFFU << (8U * FIELD_GET(SF32LB_PINR_FIELD_MSK, pin));
-		val = sys_read32(config->cfg + pinr_offset);
-		val &= ~pinr_msk;
-		val |= FIELD_PREP(pinr_msk, FIELD_GET(SF32LB_PAD_MSK, pin));
-		sys_write32(val, config->cfg + pinr_offset);
+		ll_cfg_set_pinr_field((HPSYS_CFG_TypeDef *)config->cfg, pinr_offset,
+				      FIELD_GET(SF32LB_PINR_FIELD_MSK, pin),
+				      FIELD_GET(SF32LB_PAD_MSK, pin));
 	}
 
 	/* configure HPSYS_PINMUX */
@@ -120,14 +115,9 @@ static int pinctrl_configure_pin(pinctrl_soc_pin_t pin)
 	}
 	ll_pinmux_config_drive(pinmux, pad_num, drive);
 	if (pa39_42) {
-		if (pinctrl_sf32lb52x_uses_i2c_mode(pin)) {
-			/* LL gap: PA39-PA42 use this bit as MODE rather than generic slew. */
-			sys_set_bits((mem_addr_t)ll_pinmux_get_pad_reg(pinmux, pad_num),
-				     SF32LB_SR_MSK);
-		} else {
-			sys_clear_bits((mem_addr_t)ll_pinmux_get_pad_reg(pinmux, pad_num),
-				       SF32LB_SR_MSK);
-		}
+		/* PA39-PA42 use the SR bit as MODE (I2C mode) rather than generic slew. */
+		ll_pinmux_set_slew_rate(pinmux, pad_num,
+					pinctrl_sf32lb52x_uses_i2c_mode(pin) ? 1U : 0U);
 	} else {
 		ll_pinmux_set_slew_rate(pinmux, pad_num, slew);
 	}
