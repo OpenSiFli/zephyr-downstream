@@ -98,11 +98,15 @@ static inline int gpio_sf32lb_configure(const struct device *port, gpio_pin_t pi
 			/* disable O */
 			ll_gpio_bank_set_low(bank, pin_mask);
 
-			/* set initial state (OE) */
+			/*
+			 * Open-drain level is encoded in the output enable (OE):
+			 * high = released (OE=0, pulled up), low = pulled to ground
+			 * (OE=1). This matches the reference HAL (HAL_GPIO_WritePin).
+			 */
 			if ((flags & GPIO_OUTPUT_INIT_HIGH) != 0U) {
-				ll_gpio_bank_enable_output(bank, pin_mask);
-			} else if ((flags & GPIO_OUTPUT_INIT_LOW) != 0U) {
 				ll_gpio_bank_disable_output(bank, pin_mask);
+			} else if ((flags & GPIO_OUTPUT_INIT_LOW) != 0U) {
+				ll_gpio_bank_enable_output(bank, pin_mask);
 			}
 		} else {
 			data->od &= ~BIT(pin);
@@ -153,9 +157,25 @@ static inline int gpio_sf32lb_configure(const struct device *port, gpio_pin_t pi
 static int gpio_sf32lb_port_get_raw(const struct device *port, uint32_t *value)
 {
 	const struct gpio_sf32lb_config *config = port->config;
+	struct gpio_sf32lb_data *data = port->data;
 	ll_gpio_bank_t *bank = (ll_gpio_bank_t *)config->gpio;
+	uint32_t doer = ll_gpio_bank_is_output_enabled(bank, 0xffffffffU);
+	uint32_t od_mask = data->od;
+	uint32_t val = 0U;
 
-	*value = ll_gpio_bank_read_input_port(bank);
+	/*
+	 * Match the reference HAL (HAL_GPIO_ReadPin): for push-pull outputs the
+	 * logical level is the output latch (DOR) - reading DIR for an output
+	 * is unreliable (the input buffer may be disabled, or the pad loaded by
+	 * external circuitry such as an LED). Open-drain outputs are level-encoded
+	 * in the output-enable register (OE=1 pulls low, OE=0 releases high).
+	 * Only genuine inputs are read back through DIR.
+	 */
+	val |= ll_gpio_bank_read_output_port(bank) & (doer & ~od_mask);
+	val |= ll_gpio_bank_read_input_port(bank) & (~doer & ~od_mask);
+	val |= (~doer) & od_mask;
+
+	*value = val;
 
 	return 0;
 }
@@ -176,8 +196,9 @@ static int gpio_sf32lb_port_set_masked_raw(const struct device *port, gpio_port_
 
 	od_mask = mask & data->od;
 	if (od_mask != 0U) {
-		ll_gpio_bank_enable_output(bank, value & od_mask);
-		ll_gpio_bank_disable_output(bank, (~value) & od_mask);
+		/* OD: high = release (OE=0), low = pull to ground (OE=1) */
+		ll_gpio_bank_disable_output(bank, value & od_mask);
+		ll_gpio_bank_enable_output(bank, (~value) & od_mask);
 	}
 
 	return 0;
@@ -194,7 +215,8 @@ static int gpio_sf32lb_port_set_bits_raw(const struct device *port, gpio_port_pi
 	ll_gpio_bank_set_high(bank, pp_pins);
 
 	od_pins = pins & data->od;
-	ll_gpio_bank_enable_output(bank, od_pins);
+	/* OD high = release the output driver (OE=0). */
+	ll_gpio_bank_disable_output(bank, od_pins);
 
 	return 0;
 }
@@ -210,7 +232,8 @@ static int gpio_sf32lb_port_clear_bits_raw(const struct device *port, gpio_port_
 	ll_gpio_bank_set_low(bank, pp_pins);
 
 	od_pins = pins & data->od;
-	ll_gpio_bank_disable_output(bank, od_pins);
+	/* OD low = enable the output driver (OE=1, pull to ground). */
+	ll_gpio_bank_enable_output(bank, od_pins);
 
 	return 0;
 }
