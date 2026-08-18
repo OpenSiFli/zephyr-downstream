@@ -55,6 +55,12 @@ void test_gpio_pin_interrupt_edge(unsigned int cfg_flags,
 	unsigned int cfg_out_flag;
 	int ret;
 
+	if (IS_ENABLED(CONFIG_BOARD_SF32LB52_DEVKIT_LCD)) {
+		/* Hardware never raises an interrupt while the pin's output driver is enabled. */
+		ztest_test_skip();
+		return;
+	}
+
 	port = DEVICE_DT_GET(TEST_NODE);
 	zassert_true(device_is_ready(port), "GPIO dev is not ready");
 
@@ -132,6 +138,12 @@ void test_gpio_pin_interrupt_level(unsigned int cfg_flags,
 	unsigned int cfg_out_flag;
 	int pin_out_val;
 	int ret;
+
+	if (IS_ENABLED(CONFIG_BOARD_SF32LB52_DEVKIT_LCD)) {
+		/* Hardware never raises an interrupt while the pin's output driver is enabled. */
+		ztest_test_skip();
+		return;
+	}
 
 	port = DEVICE_DT_GET(TEST_NODE);
 	zassert_true(device_is_ready(port), "GPIO dev is not ready");
