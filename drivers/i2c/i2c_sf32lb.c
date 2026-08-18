@@ -642,37 +642,46 @@ static int i2c_sf32lb_master_recv(const struct device *dev, uint16_t addr, struc
 	return ret;
 }
 
+static int i2c_sf32lb_speed_to_mode(uint32_t speed, uint32_t *mode)
+{
+	switch (speed) {
+	case I2C_SPEED_STANDARD:
+		*mode = LL_I2C_MODE_STANDARD;
+		return 0;
+
+	case I2C_SPEED_FAST:
+		*mode = LL_I2C_MODE_FAST;
+		return 0;
+
+	case I2C_SPEED_FAST_PLUS:
+		*mode = LL_I2C_MODE_HS_STD_FALLBK;
+		return 0;
+
+	case I2C_SPEED_HIGH:
+		*mode = LL_I2C_MODE_HS_FAST_FALLBK;
+		return 0;
+
+	default:
+		return -ENOTSUP;
+	}
+}
+
 static int i2c_sf32lb_configure(const struct device *dev, uint32_t dev_config)
 {
 	const struct i2c_sf32lb_config *cfg = dev->config;
 	struct i2c_sf32lb_data *data = dev->data;
 	I2C_TypeDef *i2c = i2c_sf32lb_regs(cfg);
 	uint32_t mode;
+	int ret;
 
 	if (!(I2C_MODE_CONTROLLER & dev_config)) {
 		return -ENOTSUP;
 	}
 
-	switch (I2C_SPEED_GET(dev_config)) {
-	case I2C_SPEED_STANDARD:
-		mode = LL_I2C_MODE_STANDARD;
-		break;
-
-	case I2C_SPEED_FAST:
-		mode = LL_I2C_MODE_FAST;
-		break;
-
-	case I2C_SPEED_FAST_PLUS:
-		mode = LL_I2C_MODE_HS_STD_FALLBK;
-		break;
-
-	case I2C_SPEED_HIGH:
-		mode = LL_I2C_MODE_HS_FAST_FALLBK;
-		break;
-
-	default:
+	ret = i2c_sf32lb_speed_to_mode(I2C_SPEED_GET(dev_config), &mode);
+	if (ret < 0) {
 		LOG_ERR("Unsupported I2C speed requested:%d", I2C_SPEED_GET(dev_config));
-		return -ENOTSUP;
+		return ret;
 	}
 
 	k_mutex_lock(&data->lock, K_FOREVER);
@@ -710,6 +719,54 @@ static int i2c_sf32lb_get_config(const struct device *dev, uint32_t *dev_config)
 	}
 
 	return 0;
+}
+
+/*
+ * Release the I2C bus (if a slave is holding SDA low) and reset the controller,
+ * then restore its configuration.
+ *
+ * The hardware reset (CR.RSTREQ) clears the control/configuration registers,
+ * including the SCL output enable (CR.SCLE), speed mode (CR.MODE), slave
+ * address and timing. If they are not re-applied, the first transfer after a
+ * reset cannot clock the bus (SCL stays disabled) and stalls while waiting for
+ * the transmit-empty flag. The unit reset bit (CR.UR) releases SDA/SCL so a
+ * slave stuck in a transfer can be recovered, mirroring the reference HAL
+ * (HAL_I2C_Reset).
+ *
+ * This helper must not take data->lock (it is used from transfer(), which
+ * already holds it).
+ */
+static void i2c_sf32lb_reset_unit(const struct device *dev)
+{
+	const struct i2c_sf32lb_config *cfg = dev->config;
+	I2C_TypeDef *i2c = i2c_sf32lb_regs(cfg);
+	uint32_t mode;
+	int ret;
+
+	/* Release the pins with a short unit-reset pulse. */
+	i2c->CR |= I2C_CR_UR;
+	k_busy_wait(1);
+	i2c->CR &= ~I2C_CR_UR;
+
+	/* Reset the controller and wait for the request to complete. */
+	ll_i2c_request_reset(i2c);
+	while (ll_i2c_is_reset_requested(i2c)) {
+	}
+
+	/* Pulse UR once more, then restore the configuration. */
+	i2c->CR |= I2C_CR_UR;
+	k_busy_wait(1);
+	i2c->CR &= ~I2C_CR_UR;
+
+	ret = i2c_sf32lb_speed_to_mode(I2C_SPEED_GET(i2c_map_dt_bitrate(cfg->bitrate)), &mode);
+	if (ret < 0) {
+		mode = LL_I2C_MODE_STANDARD;
+	}
+	i2c_sf32lb_config_speed_mode(i2c, mode);
+	/* Avoid sharing the same address with targets, 0x7c is a reserved address */
+	ll_i2c_set_slave_address(i2c, 0x7CU);
+	ll_i2c_enable(i2c);
+	ll_i2c_enable_scl(i2c);
 }
 
 static int i2c_sf32lb_transfer(const struct device *dev, struct i2c_msg *msgs, uint8_t num_msgs,
@@ -765,6 +822,13 @@ static int i2c_sf32lb_transfer(const struct device *dev, struct i2c_msg *msgs, u
 		i2c_sf32lb_disable_all_irqs(i2c);
 		k_sem_reset(&data->i2c_compl);
 		i2c_sf32lb_clear_status(i2c, i2c_sf32lb_get_status(i2c));
+		/*
+		 * A failed/aborted transfer can leave the unit-busy flag (UB)
+		 * set, making every later transfer report -EBUSY. Reset the
+		 * unit (and restore its configuration) so the bus stays
+		 * usable after an error.
+		 */
+		i2c_sf32lb_reset_unit(dev);
 	}
 	ll_i2c_disable(i2c);
 
@@ -777,12 +841,7 @@ static int i2c_sf32lb_transfer(const struct device *dev, struct i2c_msg *msgs, u
 
 static int i2c_sf32lb_recover_bus(const struct device *dev)
 {
-	const struct i2c_sf32lb_config *config = dev->config;
-	I2C_TypeDef *i2c = i2c_sf32lb_regs(config);
-
-	i2c_sf32lb_request_reset(i2c);
-	while (i2c_sf32lb_is_reset_requested(i2c)) {
-	}
+	i2c_sf32lb_reset_unit(dev);
 
 	return 0;
 }
@@ -791,6 +850,9 @@ static DEVICE_API(i2c, i2c_sf32lb_driver_api) = {
 	.configure = i2c_sf32lb_configure,
 	.get_config = i2c_sf32lb_get_config,
 	.transfer = i2c_sf32lb_transfer,
+#ifdef CONFIG_I2C_RTIO
+	.iodev_submit = i2c_iodev_submit_fallback,
+#endif
 	.recover_bus = i2c_sf32lb_recover_bus,
 };
 
