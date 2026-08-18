@@ -293,6 +293,7 @@ static int pwm_sf32lb_configure_capture(const struct device *dev,
 {
 	struct pwm_sf32lb_data *data = dev->data;
 	struct pwm_sf32lb_capture_data *cpt = &data->capture;
+	const struct pwm_sf32lb_config *config = dev->config;
 
 	if (channel >= 2U) {
 		LOG_ERR("PWM capture only supported on channel 0 or 1 "
@@ -308,6 +309,20 @@ static int pwm_sf32lb_configure_capture(const struct device *dev,
 		LOG_ERR("No PWM capture type specified");
 		return -EINVAL;
 	}
+
+	/*
+	 * The GPT is a 16-bit timer. Run the counter over its full range so
+	 * that any period shorter than 65536 ticks is measured without the
+	 * counter wrapping (which would set UIF and be reported as -ERANGE).
+	 */
+	ll_gptim_set_auto_reload(config->tim, 0xffffU);
+	/*
+	 * Restrict update requests to counter overflow only. In reset mode the
+	 * slave controller reinitializes the counter on every input edge, and
+	 * with the default (URS=0) those resets also raise UIF, making every
+	 * capture look like an overflow.
+	 */
+	ll_gptim_set_update_request_overflow_only(config->tim);
 
 	unsigned int key = irq_lock();
 	cpt->callback = cb;
