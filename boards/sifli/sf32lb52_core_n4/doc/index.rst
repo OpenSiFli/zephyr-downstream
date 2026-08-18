@@ -1,50 +1,51 @@
-.. zephyr:board:: sf32lb52_devkit_lcd
+.. zephyr:board:: sf32lb52_core_n4
 
 Overview
 ********
 
-SF32LB52-DevKit-LCD is a development board based on the SF32LB52x series chip
-SoC. It is mainly used for developing various applications based on
-SPI/DSPI/QSPI or MCU/8080 interface display screens.
+SF32LB52-Core-N4 is a compact development board based on the SF32LB52x
+series SoC. It is mainly used for developing and evaluating applications
+based on the SF32LB52x series chip.
 
 More information about the board can be found at the
-`SF32LB52-DevKit-LCD website`_.
+`SF32LB52-Core-N4 website`_.
 
 Hardware
 ********
 
-SF32LB52-DevKit-LCD provides the following hardware components:
+SF32LB52-Core-N4 provides the following hardware components:
 
-- SF32LB52x-MOD-N16R8 module based on SF32LB525UC6
+- SF32LB52BU56 SoC
 
-  - 8MB OPI-PSRAM @ 144MHz (from SF32LB525UC6)
-  - 128Mb QSPI-NOR @ 72MHz, STR mode
+  - ARM Cortex-M33 processor
   - 48MHz crystal
   - 32.768KHz crystal
-  - Onboard antenna (default) or IPEX antenna, selectable via 0 ohm resistor
-  - RF matching network and other R/L/C components
+  - 4Mb QSPI-NOR @ 96MHz
+  - Bluetooth Low Energy and 2.4GHz wireless connectivity
 
-- Dedicated screen interface
+- Memory
 
-  - SPI/DSPI/QSPI, supports DDR mode QSPI, led out through 22-pin FPC and 40-pin
-    header
-  - 8-bit MCU/8080, led out through 22pin FPC and 40pin header.
-  - Supports touch screens with I2C interface.
+  - On-chip SRAM
+  - External QSPI-NOR flash
 
-- Audio
+- GPIO
 
-  - Analog MIC input.
-  - Analog audio output, onboard Class-D audio PA.
+  - GPIO pins are available through the board headers
+  - Supports common peripheral interfaces such as UART, SPI, I2C and PWM
 
 - USB
 
-  - Type C interface, connected to USB to serial chip, enabling program
-    download and software debug, can also supply power.
-  - Type C interface, supports USB-2.0 FS, can also supply power.
+  - Type-C interface for power supply
+  - USB interface for programming and debugging
 
 - SD card
 
   - Supports TF cards using SPI interface, onboard Micro SD card slot.
+
+- Debug
+
+  - Onboard debug/programming interface
+  - Supports software download and debugging through the USB interface
 
 Supported Features
 ==================
@@ -63,8 +64,8 @@ References
 
 .. target-notes::
 
-.. _SF32LB52-DevKit-LCD website:
-   https://wiki.sifli.com/en/board/sf32lb52x/SF32LB52-DevKit-LCD.html
+.. _SF32LB52-Core-N4 website:
+   https://wiki.sifli.com/en/board/sf32lb52x/SF32LB52-DevKit-Core-3p3.html
 
 .. _sftool website:
    https://github.com/OpenSiFli/sftool

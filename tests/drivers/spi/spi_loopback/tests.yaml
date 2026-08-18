@@ -14,8 +14,15 @@ tests:
   drivers.spi.loopback.sf32lb52:
     platform_allow:
       - sf32lb52_devkit_lcd
+      - sf32lb52_core_n4
+      - sf32lb52_core_n16r16
+      - sf32lb52_wlan_core_n16r16
     extra_args:
       - DTC_OVERLAY_FILE="boards/sf32lb52_devkit_lcd.overlay"
+      - DTC_OVERLAY_FILE="boards/sf32lb52_core_n4.overlay"
+      - DTC_OVERLAY_FILE="boards/sf32lb52_core_n16r16.overlay"
+      - DTC_OVERLAY_FILE="boards/sf32lb52_wlan_core_n16r16.overlay"
+  drivers.spi.loopback.internal:
   drivers.spi.loopback.internal:
     filter: CONFIG_SPI_LOOPBACK_MODE_LOOP
   drivers.spi.loopback.lpspi.dma:

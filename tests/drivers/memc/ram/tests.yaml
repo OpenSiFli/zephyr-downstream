@@ -33,8 +33,14 @@ tests:
 
     platform_allow:
       - sf32lb52_devkit_lcd
+      - sf32lb52_core_n16r16
+      - sf32lb52_wlan_core_n16r16
     extra_args:
       - platform:sf32lb52_devkit_lcd:DTC_OVERLAY_FILE=boards/sf32lb52_devkit_lcd.overlay
       - platform:sf32lb52_devkit_lcd:EXTRA_CONF_FILE=boards/sf32lb52_devkit_lcd.conf
+      - platform:sf32lb52_core_n16r16:DTC_OVERLAY_FILE=boards/sf32lb52_core_n16r16.overlay
+      - platform:sf32lb52_core_n16r16:EXTRA_CONF_FILE=boards/sf32lb52_core_n16r16.conf
+      - platform:sf32lb52_wlan_core_n16r16:DTC_OVERLAY_FILE=boards/sf32lb52_wlan_core_n16r16.overlay
+      - platform:sf32lb52_wlan_core_n16r16:EXTRA_CONF_FILE=boards/sf32lb52_wlan_core_n16r16.conf
 
 

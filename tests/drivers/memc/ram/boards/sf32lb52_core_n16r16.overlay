@@ -1,0 +1,15 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Device tree overlay for SF32LB52 PSRAM test
+ */
+
+/ {
+	aliases {
+		psram0 = &mpi1;
+	};
+};
+
+/* Add memc label to mpi1 for test compatibility */
+memc: &mpi1 {
+};

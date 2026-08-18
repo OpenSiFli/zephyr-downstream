@@ -1,13 +1,43 @@
+# - connected: true
+#   id: "sf32lb52_devkit_lcd"
+#   platform: sf32lb52_devkit_lcd
+#   product: SF32LB52 DevKit LCD
+#   runner: sftool
+#   serial: COM28
+#   baud: 1000000
+#   flash_before: true
+#   fixtures:
+#     - gpio_loopback
+#     - pwm_loopback
+#     - spi_loopback
+#     - i2c_at24
+
+
+# - connected: true
+#   id: "sf32lb52_core_n4"
+#   platform: sf32lb52_core_n4
+#   product: SF32LB52 Core N4
+#   runner: sftool
+#   serial: COM4
+#   baud: 1000000
+#   flash_before: true
+#   fixtures:
+#     - gpio_loopback
+#     - spi_loopback
+#     - pwm_loopback
+#     - i2c_at24
+
 - connected: true
-  id: "sf32lb52_devkit_lcd"
-  platform: sf32lb52_devkit_lcd
-  product: SF32LB52 DevKit LCD
+  id: "sf32lb52_core_n16r16"
+  platform: sf32lb52_core_n16r16
+  product: SF32LB52 Core N16R16
   runner: sftool
-  serial: COM37
+  serial: COM15
   baud: 1000000
   flash_before: true
   fixtures:
-    - spi_loopback
+    - pwm_loopback
     - gpio_loopback
+    - spi_loopback
     - i2c_at24
     - pwm_loopback
