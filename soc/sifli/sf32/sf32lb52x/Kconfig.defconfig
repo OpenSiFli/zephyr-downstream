@@ -13,6 +13,11 @@ config SYS_CLOCK_HW_CYCLES_PER_SEC
 config FLASH_BASE_ADDRESS
 	default $(dt_node_reg_addr_by_name_hex,$(DT_CHOSEN_FLASH_PARENT),nor)
 
+# The "size" property of the zephyr,flash chosen node (a jedec,qspi-nor
+# flash) is expressed in bits, hence the Kb (bits -> KB) unit conversion.
+config FLASH_SIZE
+	default $(dt_node_int_prop_int,$(DT_CHOSEN_FLASH_NODE),size,Kb)
+
 config USE_DT_CODE_PARTITION
 	default y
 
