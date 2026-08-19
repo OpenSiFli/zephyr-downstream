@@ -1,0 +1,47 @@
+/*
+ * Copyright (c) 2025 Core Devices LLC
+ * Copyright (c) 2025 SiFli Technologies(Nanjing) Co., Ltd
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <mem.h>
+
+#include <zephyr/dt-bindings/dma/sf32lb52x-dma.h>
+
+#include <sifli/sf32lb52x.dtsi>
+
+/*
+ * SF32LB520U36: QFN68L, Li-ion battery powered (3.2~4.7V), 44 GPIOs.
+ * MPI1 SiP: 1MB QSPI NOR.
+ */
+
+/* Internal SiP QSPI NOR on MPI1, memory window at 0x60000000 (all masters) */
+&mpi1 {
+	compatible = "sifli,sf32lb-mpi-qspi-nor";
+	reg = <0x50041000 0x1000>, <0x60000000 DT_SIZE_M(1)>;
+	reg-names = "ctrl", "nor";
+	dmas = <&dmac 0 SF32LB52X_DMA_REQ_MPI1 SF32LB_DMA_PL_MEDIUM>;
+	sifli,lines = <4>;
+	sifli,psclr = <0>;
+
+	flash@0 {
+		compatible = "jedec,qspi-nor";
+		reg = <0x0>;
+		size = <DT_SIZE_M(1)>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		flash@60000000 {
+			compatible = "soc-nv-flash";
+			#address-cells = <1>;
+			#size-cells = <1>;
+			reg = <0x60000000 DT_SIZE_M(1)>;
+			ranges = <0x0 0x60000000 DT_SIZE_M(1)>;
+		};
+	};
+};
+
+/* 44 GPIOs total: second bank has only 12 pins (PA32..PA43) */
+&gpioa_32_44 {
+	ngpios = <12>;
+};

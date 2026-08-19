@@ -1,0 +1,29 @@
+/*
+ * Copyright (c) 2025 Core Devices LLC
+ * Copyright (c) 2025 SiFli Technologies(Nanjing) Co., Ltd
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <mem.h>
+
+#include <sifli/sf32lb52x.dtsi>
+#include <sifli/sf32lb52x-mpi1-hyperram.dtsi>
+
+/*
+ * SF32LB527UD6: QFN68L, Li-ion battery powered (3.2~4.7V), 44 GPIOs.
+ * MPI1 SiP: 16MB Hyper OPI PSRAM (HyperBus).
+ */
+
+/* Internal SiP Hyper OPI-PSRAM (HyperBus), powered by the internal 1.8V LDO (LDO1_1V8, VDDSIP) */
+&mpi1 {
+	compatible = "sifli,sf32lb-mpi-opi-psram";
+	reg = <0x50041000 0x1000>, <0x60000000 DT_SIZE_M(16)>;
+	reg-names = "ctrl", "psram";
+	power-supply = <&ldo1_1v8>;
+	sifli,protocol = "hyperram";
+};
+
+/* 44 GPIOs total: second bank has only 12 pins (PA32..PA43) */
+&gpioa_32_44 {
+	ngpios = <12>;
+};

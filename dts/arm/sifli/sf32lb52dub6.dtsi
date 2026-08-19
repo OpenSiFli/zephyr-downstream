@@ -1,0 +1,26 @@
+/*
+ * Copyright (c) 2025 Core Devices LLC
+ * Copyright (c) 2025 SiFli Technologies(Nanjing) Co., Ltd
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <mem.h>
+
+#include <sifli/sf32lb52x.dtsi>
+#include <sifli/sf32lb52x-mpi1-legacy-opi.dtsi>
+
+/*
+ * SF32LB52DUB6: QFN68L, 1.8V supply (ultra-low-power variant), 45 GPIOs.
+ * MPI1 SiP: 4MB Legacy OPI PSRAM (Xccela legacy, 3-byte address, dual reset).
+ */
+
+/* Internal SiP Legacy OPI-PSRAM, powered by the internal 1.8V LDO (LDO1_1V8, VDDSIP) */
+&mpi1 {
+	compatible = "sifli,sf32lb-mpi-opi-psram";
+	reg = <0x50041000 0x1000>, <0x60000000 DT_SIZE_M(4)>;
+	reg-names = "ctrl", "psram";
+	power-supply = <&ldo1_1v8>;
+	sifli,protocol = "xccela-legacy";
+};
+
+/* 45 GPIOs total (PA0..PA44): second bank 13 pins matches sf32lb52x.dtsi default */

@@ -6,7 +6,7 @@
 
 /dts-v1/;
 
-#include <sifli/sf32lb52x.dtsi>
+#include <sifli/sf32lb525uc6.dtsi>
 #include <sifli/sf32lb52x-ram012.dtsi>
 #include <zephyr/dt-bindings/dma/sf32lb52x-dma.h>
 #include <zephyr/dt-bindings/gpio/gpio.h>
@@ -127,13 +127,6 @@
 };
 
 &mpi1 {
-	compatible = "sifli,sf32lb-mpi-opi-psram";
-	/* SF32LB525UC6 has 8MB internal OPI PSRAM */
-	reg = <0x50041000 0x1000>, <0x60000000 DT_SIZE_M(8)>;
-	reg-names = "ctrl", "psram";
-	pinctrl-0 = <&mpi1_default>;
-	pinctrl-names = "default";
-	power-supply = <&ldo1_1v8>;
 	status = "okay";
 };
 
