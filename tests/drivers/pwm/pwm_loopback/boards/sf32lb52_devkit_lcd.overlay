@@ -19,9 +19,8 @@
 	pwm_loopback_0 {
 		compatible = "test-pwm-loopback";
 
-		pwms =
-			<&gptim1_pwm 0 0 PWM_POLARITY_NORMAL>,
-			<&gptim2_pwm 0 0 PWM_POLARITY_NORMAL>;
+		pwms = <&gptim1_pwm 0 0 PWM_POLARITY_NORMAL>,
+		       <&gptim2_pwm 0 0 PWM_POLARITY_NORMAL>;
 	};
 };
 
@@ -29,18 +28,14 @@
 	/* PWM output on gptim1 CH1 -> PA01 */
 	gptim1_pwm_default: gptim1_pwm_default {
 		group1 {
-			pinmux = <
-				PA01_GPTIM1_CH1
-			>;
+			pinmux = <PA01_GPTIM1_CH1>;
 		};
 	};
 
 	/* PWM capture input on gptim2 CH1 -> PA00 (must be an input) */
 	gptim2_pwm_default: gptim2_pwm_default {
 		group1 {
-			pinmux = <
-				PA00_GPTIM2_CH1
-			>;
+			pinmux = <PA00_GPTIM2_CH1>;
 			input-enable;
 		};
 	};

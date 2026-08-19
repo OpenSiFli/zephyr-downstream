@@ -1,0 +1,23 @@
+# Copyright (c) 2025 Core Devices LLC
+# Copyright (c) 2025 SiFli Technologies(Nanjing) Co., Ltd
+# SPDX-License-Identifier: Apache-2.0
+
+if BOARD_SF32LB52_NANO_N16R16
+
+if LVGL
+
+config LV_Z_AREA_X_ALIGNMENT_WIDTH
+	default 2
+
+config LV_Z_AREA_Y_ALIGNMENT_WIDTH
+	default 2
+
+config LV_Z_FLUSH_THREAD
+	default y
+
+config LV_Z_DOUBLE_VDB
+	default y
+
+endif # LVGL
+
+endif # BOARD_SF32LB52_NANO_N16R16

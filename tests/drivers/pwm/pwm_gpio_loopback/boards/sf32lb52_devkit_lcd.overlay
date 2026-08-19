@@ -12,29 +12,25 @@
 
 / {
 	zephyr,user {
-		pwms =
-			<&gptim2_pwm 0 PWM_MSEC(20) PWM_POLARITY_NORMAL>,
-		    <&gptim2_pwm 1 PWM_MSEC(20) PWM_POLARITY_NORMAL>,
-			<&gptim2_pwm 2 PWM_MSEC(20) PWM_POLARITY_NORMAL>,
-			<&gptim2_pwm 3 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+		pwms = <&gptim2_pwm 0 PWM_MSEC(20) PWM_POLARITY_NORMAL>,
+		       <&gptim2_pwm 1 PWM_MSEC(20) PWM_POLARITY_NORMAL>,
+		       <&gptim2_pwm 2 PWM_MSEC(20) PWM_POLARITY_NORMAL>,
+		       <&gptim2_pwm 3 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
 
-		gpios =
-			<&gpioa_00_31  31 GPIO_ACTIVE_HIGH>,
-			<&gpioa_00_31  27 GPIO_ACTIVE_HIGH>,
-			<&gpioa_00_31  05 GPIO_ACTIVE_HIGH>,
-			<&gpioa_00_31  29 GPIO_ACTIVE_HIGH>;
+		gpios = <&gpioa_00_31 31 GPIO_ACTIVE_HIGH>,
+			<&gpioa_00_31 27 GPIO_ACTIVE_HIGH>,
+			<&gpioa_00_31 05 GPIO_ACTIVE_HIGH>,
+			<&gpioa_00_31 29 GPIO_ACTIVE_HIGH>;
 	};
 };
 
 &pinctrl {
 	gptim2_pwm_default: gptim2_pwm_default {
 		group1 {
-			pinmux = <
-				PA00_GPTIM2_CH1
-				PA01_GPTIM2_CH2
-				PA02_GPTIM2_CH3
-				PA03_GPTIM2_CH4
-			>;
+			pinmux = <PA00_GPTIM2_CH1
+				  PA01_GPTIM2_CH2
+				  PA02_GPTIM2_CH3
+				  PA03_GPTIM2_CH4>;
 		};
 	};
 };
