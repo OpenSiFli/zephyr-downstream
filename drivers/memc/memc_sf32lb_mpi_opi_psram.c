@@ -53,6 +53,65 @@ LOG_MODULE_REGISTER(memc_sf32lb_mpi_opi_psram, CONFIG_MEMC_LOG_LEVEL);
 #define CCR_ADSIZE_24   2U
 #define CCR_ADSIZE_32   3U
 
+/* Alternate byte size values */
+#define CCR_ABSIZE_8    0U
+#define CCR_ABSIZE_16   1U
+#define CCR_ABSIZE_24   2U
+#define CCR_ABSIZE_32   3U
+
+/*
+ * PSRAM interface protocols supported by the MPI controller.
+ * The enum order MUST match the "sifli,protocol" DT string enum so that
+ * DT_INST_ENUM_IDX() can be used to select the protocol descriptor.
+ */
+enum sf32lb_psram_protocol {
+	SF32LB_PSRAM_PROTO_XCCELA_OPI = 0, /* Xccela octal (SiP OPI PSRAM)      */
+	SF32LB_PSRAM_PROTO_XCCELA_LEGACY,  /* Xccela legacy (AP 32Mb, external) */
+	SF32LB_PSRAM_PROTO_HYPERRAM,       /* HyperBus (external)               */
+};
+
+/* Dummy-cycle formula used to derive AHB/MR access dummy cycles */
+enum sf32lb_psram_dummy {
+	SF32LB_PSRAM_DUMMY_OPI,    /* dcyc = lat - 1 (Xccela OPI)           */
+	SF32LB_PSRAM_DUMMY_LEGACY, /* dcyc = 2*lat (rd) / lat (wr) (legacy) */
+};
+
+struct sf32lb_psram_cmd {
+	uint8_t read;
+	uint8_t write;
+	uint8_t mr_read;
+	uint8_t mr_write;
+	uint8_t reset;
+};
+
+struct memc_sf32lb_mpi_opi_psram_data;
+
+/*
+ * Per-protocol descriptor. Everything that differs between the PSRAM
+ * interface protocols (Xccela OPI / Xccela legacy QPI / HyperBus) is
+ * described here so that one driver can cover all of them.
+ */
+struct sf32lb_psram_proto {
+	uint32_t ll_proto;    /* LL_MPI_PROTO_*                    */
+	uint8_t xlegacy;      /* DCR.XLEGACY (Xccela legacy)       */
+	uint8_t dqs;          /* DCR.DQSE                          */
+	uint8_t imode;        /* CCR instruction phase mode        */
+	uint8_t admode;       /* CCR address phase mode            */
+	uint8_t dmode;        /* CCR data phase mode               */
+	uint8_t adsize;       /* CCR address size                  */
+	uint8_t reset_count;  /* number of reset command cycles    */
+	uint8_t reset_absize; /* reset alternate-byte size         */
+	uint8_t mr_wr_len;    /* MR write data length in bytes     */
+	bool     burst_mr8;   /* program MR8 burst length (Xccela) */
+	uint8_t dummy_mode;   /* enum sf32lb_psram_dummy           */
+	uint8_t ahb_abmode;   /* AHB read/write alternate-byte mode (CCR_ABMODE) */
+	struct sf32lb_psram_cmd cmd;
+	/* Compute dummy-cycle read/write latency from the MPI clock rate */
+	void (*set_dummy_latency)(struct memc_sf32lb_mpi_opi_psram_data *data, uint32_t freq);
+	/* Program device MR registers + DCR.FIXLAT for fixed-latency mode */
+	int (*set_fixlat)(const struct device *dev, uint32_t psram_freq);
+};
+
 struct memc_sf32lb_mpi_opi_psram_config {
 	MPI_TypeDef *mpi;
 	uintptr_t psram_base;
@@ -60,6 +119,7 @@ struct memc_sf32lb_mpi_opi_psram_config {
 	struct sf32lb_clock_dt_spec clock;
 	const struct pinctrl_dev_config *pcfg;
 	const struct device *power_supply;
+	const struct sf32lb_psram_proto *proto;
 };
 
 struct memc_sf32lb_mpi_opi_psram_data {
@@ -183,22 +243,45 @@ static void mpi_manual_cmd(MPI_TypeDef *mpi, bool is_write, uint8_t dmode, uint8
 	ll_mpi_write_command_config(mpi, LL_MPI_CS_1, ccr1);
 }
 
+/*
+ * Compute dummy cycles for read/write access from the protocol dummy mode.
+ * - OPI:    dcyc = latency - 1
+ * - legacy: dcyc = 2*latency (read), latency (write)
+ */
+static inline uint8_t mpi_rd_dummy(uint8_t mode, uint8_t lat)
+{
+	return (mode == SF32LB_PSRAM_DUMMY_LEGACY) ? (uint8_t)(lat * 2U) : (uint8_t)(lat - 1U);
+}
+
+static inline uint8_t mpi_wr_dummy(uint8_t mode, uint8_t lat)
+{
+	return (mode == SF32LB_PSRAM_DUMMY_LEGACY) ? lat : (uint8_t)(lat - 1U);
+}
+
 static int mpi_psram_reset(const struct device *dev)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
+	const struct sf32lb_psram_proto *proto = cfg->proto;
 	MPI_TypeDef *mpi = cfg->mpi;
+	uint8_t i;
 	int ret;
 
-	/* Configure reset command: write mode, no data, 1-byte AB, 32-bit addr, OPI mode */
-	mpi_manual_cmd(mpi, true, CCR_MODE_NONE, 0, CCR_MODE_OCT, 0, CCR_ADSIZE_32, CCR_MODE_OCT,
-		       CCR_MODE_OCT);
+	/*
+	 * Configure reset command: write mode, no data, alternate byte in octal,
+	 * protocol address size and instruction/address phases. Legacy (AP 32Mb)
+	 * PSRAM needs two reset cycles and a 4-byte alternate byte.
+	 */
+	for (i = 0; i < proto->reset_count; i++) {
+		mpi_manual_cmd(mpi, true, CCR_MODE_NONE, 0, CCR_MODE_OCT, proto->reset_absize,
+			       proto->adsize, proto->admode, proto->imode);
 
-	/* Send reset command */
-	ll_mpi_set_address(mpi, LL_MPI_CS_1, 0U);
-	ll_mpi_set_command_byte(mpi, LL_MPI_CS_1, OPSRAM_CMD_RESET);
-	ret = mpi_wait_complete(mpi);
-	if (ret < 0) {
-		return ret;
+		/* Send reset command */
+		ll_mpi_set_address(mpi, LL_MPI_CS_1, 0U);
+		ll_mpi_set_command_byte(mpi, LL_MPI_CS_1, proto->cmd.reset);
+		ret = mpi_wait_complete(mpi);
+		if (ret < 0) {
+			return ret;
+		}
 	}
 
 	/* Wait for PSRAM to reset */
@@ -209,41 +292,43 @@ static int mpi_psram_reset(const struct device *dev)
 static int mpi_mr_write(const struct device *dev, uint8_t addr, uint8_t value)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
+	const struct sf32lb_psram_proto *proto = cfg->proto;
 	MPI_TypeDef *mpi = cfg->mpi;
 
-	/* Configure MR write command: write mode, OPI data, no dummy, 32-bit addr, OPI mode */
-	mpi_manual_cmd(mpi, true, CCR_MODE_OCT, 0, CCR_MODE_NONE, 0, CCR_ADSIZE_32, CCR_MODE_OCT,
-		       CCR_MODE_OCT);
+	/* Configure MR write command: write mode, protocol data phase, no dummy */
+	mpi_manual_cmd(mpi, true, proto->dmode, 0, CCR_MODE_NONE, 0, proto->adsize,
+		       proto->admode, proto->imode);
 
-	/* Set data length to 2 bytes */
-	ll_mpi_set_data_length(mpi, LL_MPI_CS_1, 2U);
+	/* Set data length (2 bytes OPI / 4 bytes legacy) */
+	ll_mpi_set_data_length(mpi, LL_MPI_CS_1, proto->mr_wr_len);
 
 	/* Write data to FIFO */
 	ll_mpi_write_data(mpi, (uint32_t)value);
 
 	/* Send command */
 	ll_mpi_set_address(mpi, LL_MPI_CS_1, addr);
-	ll_mpi_set_command_byte(mpi, LL_MPI_CS_1, OPSRAM_CMD_MRWRITE);
+	ll_mpi_set_command_byte(mpi, LL_MPI_CS_1, proto->cmd.mr_write);
 	return mpi_wait_complete(mpi);
 }
 
 static __maybe_unused uint8_t mpi_mr_read(const struct device *dev, uint8_t addr)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
+	const struct sf32lb_psram_proto *proto = cfg->proto;
 	struct memc_sf32lb_mpi_opi_psram_data *data = dev->data;
 	MPI_TypeDef *mpi = cfg->mpi;
 	uint8_t rdcyc = data->rd_latency;
 
-	/* Configure MR read command: read mode, OPI data, dummy cycles, 32-bit addr, OPI mode */
-	mpi_manual_cmd(mpi, false, CCR_MODE_OCT, rdcyc - 1, CCR_MODE_NONE, 0, CCR_ADSIZE_32,
-		       CCR_MODE_OCT, CCR_MODE_OCT);
+	/* Configure MR read command: read mode, protocol data phase, dummy cycles */
+	mpi_manual_cmd(mpi, false, proto->dmode, mpi_rd_dummy(proto->dummy_mode, rdcyc),
+		       CCR_MODE_NONE, 0, proto->adsize, proto->admode, proto->imode);
 
 	/* Set data length to 2 bytes */
 	ll_mpi_set_data_length(mpi, LL_MPI_CS_1, 2U);
 
 	/* Send command */
 	ll_mpi_set_address(mpi, LL_MPI_CS_1, addr);
-	ll_mpi_set_command_byte(mpi, LL_MPI_CS_1, OPSRAM_CMD_MRREAD);
+	ll_mpi_set_command_byte(mpi, LL_MPI_CS_1, proto->cmd.mr_read);
 	if (mpi_wait_complete(mpi) < 0) {
 		return 0;
 	}
@@ -251,58 +336,56 @@ static __maybe_unused uint8_t mpi_mr_read(const struct device *dev, uint8_t addr
 	return (uint8_t)(ll_mpi_read_data(mpi) & 0xFFU);
 }
 
-static void mpi_set_fixlat(const struct device *dev, bool fix, uint8_t r_lat, uint8_t w_lat)
+static int mpi_csr_write(const struct device *dev, uint8_t idx, uint16_t value)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
+	const struct sf32lb_psram_proto *proto = cfg->proto;
 	MPI_TypeDef *mpi = cfg->mpi;
-	uint8_t mr0, mr4;
-	uint8_t rlat_arr[8] = {0, 0, 0, 0, 1, 2, 3, 4};
-	uint8_t wlat_arr[8] = {0, 0, 0, 0, 4, 2, 6, 1};
 
-	/* Set fixed latency in DCR */
-	ll_mpi_set_fixed_latency(mpi, fix ? 1U : 0U);
+	/*
+	 * HyperBus CSR write: command 0x60, address 0x10000, alternate byte
+	 * carries the CSR index (one byte, octal phase).
+	 */
+	mpi_manual_cmd(mpi, true, proto->dmode, 0, CCR_MODE_OCT, CCR_ABSIZE_8, proto->adsize,
+		       proto->admode, proto->imode);
 
-	/* Configure MR0 and MR4 */
-	if (fix) {
-		mr0 = (1U << 5) | (rlat_arr[r_lat / 2] << 2) | 1U;
-		mr4 = (wlat_arr[w_lat] << 5);
-	} else {
-		mr0 = (rlat_arr[r_lat] << 2) | 1U;
-		mr4 = (wlat_arr[w_lat] << 5);
-	}
-
-	mpi_mr_write(dev, 0, mr0);
-	mpi_mr_write(dev, 4, mr4);
+	ll_mpi_set_alt_bytes(mpi, LL_MPI_CS_1, idx);
+	ll_mpi_set_data_length(mpi, LL_MPI_CS_1, 2U);
+	ll_mpi_write_data(mpi, (uint32_t)value);
+	ll_mpi_set_address(mpi, LL_MPI_CS_1, 0x10000U);
+	ll_mpi_set_command_byte(mpi, LL_MPI_CS_1, 0x60U);
+	return mpi_wait_complete(mpi);
 }
 
 static void mpi_configure_ahb_cmd(const struct device *dev)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
+	const struct sf32lb_psram_proto *proto = cfg->proto;
 	struct memc_sf32lb_mpi_opi_psram_data *data = dev->data;
 	MPI_TypeDef *mpi = cfg->mpi;
 	uint32_t hrccr, hwccr;
 
 	/* Configure AHB read command */
-	hrccr = FIELD_PREP(MPI_HRCCR_IMODE_Msk, CCR_MODE_OCT) |
-		FIELD_PREP(MPI_HRCCR_ADMODE_Msk, CCR_MODE_OCT) |
-		FIELD_PREP(MPI_HRCCR_ADSIZE_Msk, CCR_ADSIZE_32) |
-		FIELD_PREP(MPI_HRCCR_ABMODE_Msk, CCR_MODE_NONE) |
-		FIELD_PREP(MPI_HRCCR_DCYC_Msk, data->rd_latency - 1) |
-		FIELD_PREP(MPI_HRCCR_DMODE_Msk, CCR_MODE_OCT);
+	hrccr = FIELD_PREP(MPI_HRCCR_IMODE_Msk, proto->imode) |
+		FIELD_PREP(MPI_HRCCR_ADMODE_Msk, proto->admode) |
+		FIELD_PREP(MPI_HRCCR_ADSIZE_Msk, proto->adsize) |
+		FIELD_PREP(MPI_HRCCR_ABMODE_Msk, proto->ahb_abmode) |
+		FIELD_PREP(MPI_HRCCR_DCYC_Msk, mpi_rd_dummy(proto->dummy_mode, data->rd_latency)) |
+		FIELD_PREP(MPI_HRCCR_DMODE_Msk, proto->dmode);
 	ll_mpi_set_ahb_read_config(mpi, hrccr);
 
 	/* Configure AHB write command */
-	hwccr = FIELD_PREP(MPI_HWCCR_IMODE_Msk, CCR_MODE_OCT) |
-		FIELD_PREP(MPI_HWCCR_ADMODE_Msk, CCR_MODE_OCT) |
-		FIELD_PREP(MPI_HWCCR_ADSIZE_Msk, CCR_ADSIZE_32) |
-		FIELD_PREP(MPI_HWCCR_ABMODE_Msk, CCR_MODE_NONE) |
-		FIELD_PREP(MPI_HWCCR_DCYC_Msk, data->wr_latency - 1) |
-		FIELD_PREP(MPI_HWCCR_DMODE_Msk, CCR_MODE_OCT);
+	hwccr = FIELD_PREP(MPI_HWCCR_IMODE_Msk, proto->imode) |
+		FIELD_PREP(MPI_HWCCR_ADMODE_Msk, proto->admode) |
+		FIELD_PREP(MPI_HWCCR_ADSIZE_Msk, proto->adsize) |
+		FIELD_PREP(MPI_HWCCR_ABMODE_Msk, proto->ahb_abmode) |
+		FIELD_PREP(MPI_HWCCR_DCYC_Msk, mpi_wr_dummy(proto->dummy_mode, data->wr_latency)) |
+		FIELD_PREP(MPI_HWCCR_DMODE_Msk, proto->dmode);
 	ll_mpi_set_ahb_write_config(mpi, hwccr);
 
 	/* Set read/write commands */
-	ll_mpi_set_ahb_read_command(mpi, OPSRAM_CMD_READ);
-	ll_mpi_set_ahb_write_command(mpi, OPSRAM_CMD_WRITE);
+	ll_mpi_set_ahb_read_command(mpi, proto->cmd.read);
+	ll_mpi_set_ahb_write_command(mpi, proto->cmd.write);
 }
 
 static void mpi_set_cs_timing(const struct device *dev, uint32_t freq)
@@ -337,10 +420,8 @@ static void mpi_set_cs_timing(const struct device *dev, uint32_t freq)
 	ll_mpi_set_cs_timing(mpi, cs_max, cs_min, cshmin, trcmin);
 }
 
-static void mpi_set_latency_by_freq(const struct device *dev, uint32_t freq)
+static void mpi_set_latency_by_freq(struct memc_sf32lb_mpi_opi_psram_data *data, uint32_t freq)
 {
-	struct memc_sf32lb_mpi_opi_psram_data *data = dev->data;
-
 	/* OPI frequency is half of MPI clock */
 	freq /= 2;
 
@@ -359,14 +440,200 @@ static void mpi_set_latency_by_freq(const struct device *dev, uint32_t freq)
 	}
 }
 
+static uint8_t mpi_get_fixed_wr_latency(uint32_t psram_freq)
+{
+	if (psram_freq <= 66000000) {
+		return 3;
+	} else if (psram_freq <= 109000000) {
+		return 4;
+	} else if (psram_freq <= 133000000) {
+		return 5;
+	} else if (psram_freq <= 166000000) {
+		return 6;
+	}
+
+	return 7;
+}
+
+static int mpi_set_fixlat_opi(const struct device *dev, uint32_t psram_freq)
+{
+	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
+	struct memc_sf32lb_mpi_opi_psram_data *data = dev->data;
+	uint8_t mr0, mr4;
+	uint8_t rlat_arr[8] = {0, 0, 0, 0, 1, 2, 3, 4};
+	uint8_t wlat_arr[8] = {0, 0, 0, 0, 4, 2, 6, 1};
+	uint8_t w_lat = mpi_get_fixed_wr_latency(psram_freq);
+	uint8_t r_lat = w_lat * 2U;
+	int ret;
+
+	data->rd_latency = r_lat;
+	data->wr_latency = w_lat;
+
+	/* Set fixed latency in DCR */
+	ll_mpi_set_fixed_latency(cfg->mpi, 1U);
+
+	/* Configure MR0 and MR4 for Xccela OPI */
+	mr0 = (1U << 5) | (rlat_arr[r_lat / 2] << 2) | 1U;
+	mr4 = (wlat_arr[w_lat] << 5);
+
+	ret = mpi_mr_write(dev, 0, mr0);
+	if (ret < 0) {
+		return ret;
+	}
+
+	return mpi_mr_write(dev, 4, mr4);
+}
+
+static int mpi_set_fixlat_legacy(const struct device *dev, uint32_t psram_freq)
+{
+	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
+	struct memc_sf32lb_mpi_opi_psram_data *data = dev->data;
+	uint8_t rd_lat, wr_lat, mr0, mr4;
+	int ret;
+
+	/* Legacy (AP 32Mb) fixed-latency table (rdcyc / wdcyc) */
+	if (psram_freq <= 120000000) {
+		rd_lat = 4;
+		wr_lat = 0;
+	} else if (psram_freq <= 144000000) {
+		rd_lat = 5;
+		wr_lat = 0;
+	} else {
+		rd_lat = 6;
+		wr_lat = 2;
+	}
+
+	data->rd_latency = rd_lat;
+	data->wr_latency = wr_lat;
+
+	/* Set fixed latency in DCR */
+	ll_mpi_set_fixed_latency(cfg->mpi, 1U);
+
+	/* MR0: fixed-latency + read latency + drive strength */
+	mr0 = (1U << 5) | (rd_lat << 2) | 3U;
+	/* MR4: write latency + refresh */
+	mr4 = (wr_lat << 7) | (1U << 3);
+
+	ret = mpi_mr_write(dev, 0, mr0);
+	if (ret < 0) {
+		return ret;
+	}
+
+	return mpi_mr_write(dev, 4, mr4);
+}
+
+static int mpi_set_fixlat_hyper(const struct device *dev, uint32_t psram_freq)
+{
+	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
+	uint16_t cr0;
+
+	/* HyperRAM CSR0 latency configuration (2 bytes, device byte-swaps) */
+	if (psram_freq <= 85000000) {
+		cr0 = (14U << 12) | 0x078fU;
+	} else if (psram_freq <= 104000000) {
+		cr0 = (15U << 12) | 0x078fU;
+	} else if (psram_freq <= 120000000) {
+		cr0 = (0U << 12) | 0x078fU;
+	} else if (psram_freq <= 144000000) {
+		cr0 = (1U << 12) | 0x078fU;
+	} else {
+		cr0 = (2U << 12) | 0x078fU;
+	}
+
+	/*
+	 * rd/wr latency (dummy cycles) is already set by set_dummy_latency()
+	 * with the shared Xccela OPI table and is used by mpi_configure_ahb_cmd().
+	 */
+	ll_mpi_set_fixed_latency(cfg->mpi, 1U);
+
+	return mpi_csr_write(dev, 0, cr0);
+}
+
+static const struct sf32lb_psram_proto sf32lb_psram_protos[] = {
+	[SF32LB_PSRAM_PROTO_XCCELA_OPI] = {
+		.ll_proto = LL_MPI_PROTO_OPI,
+		.xlegacy = 0U,
+		.dqs = 1U,
+		.imode = CCR_MODE_OCT,
+		.admode = CCR_MODE_OCT,
+		.dmode = CCR_MODE_OCT,
+		.adsize = CCR_ADSIZE_32,
+		.reset_count = 1U,
+		.reset_absize = CCR_ABSIZE_8,
+		.mr_wr_len = 2U,
+		.burst_mr8 = true,
+		.dummy_mode = SF32LB_PSRAM_DUMMY_OPI,
+		.ahb_abmode = CCR_MODE_NONE,
+		.cmd = {
+			.read = OPSRAM_CMD_READ,
+			.write = OPSRAM_CMD_WRITE,
+			.mr_read = OPSRAM_CMD_MRREAD,
+			.mr_write = OPSRAM_CMD_MRWRITE,
+			.reset = OPSRAM_CMD_RESET,
+		},
+		.set_dummy_latency = mpi_set_latency_by_freq,
+		.set_fixlat = mpi_set_fixlat_opi,
+	},
+	[SF32LB_PSRAM_PROTO_XCCELA_LEGACY] = {
+		.ll_proto = LL_MPI_PROTO_OPI,
+		.xlegacy = 1U,
+		.dqs = 1U,
+		.imode = CCR_MODE_OCT,
+		.admode = CCR_MODE_OCT,
+		.dmode = CCR_MODE_OCT,
+		.adsize = CCR_ADSIZE_24,
+		.reset_count = 2U,
+		.reset_absize = CCR_ABSIZE_32,
+		.mr_wr_len = 4U,
+		.burst_mr8 = false,
+		.dummy_mode = SF32LB_PSRAM_DUMMY_LEGACY,
+		.ahb_abmode = CCR_MODE_NONE,
+		.cmd = {
+			.read = OPSRAM_CMD_READ,
+			.write = OPSRAM_CMD_WRITE,
+			.mr_read = OPSRAM_CMD_MRREAD,
+			.mr_write = OPSRAM_CMD_MRWRITE,
+			.reset = OPSRAM_CMD_RESET,
+		},
+		.set_dummy_latency = mpi_set_latency_by_freq,
+		.set_fixlat = mpi_set_fixlat_legacy,
+	},
+	[SF32LB_PSRAM_PROTO_HYPERRAM] = {
+		.ll_proto = LL_MPI_PROTO_HYPER,
+		.xlegacy = 0U,
+		.dqs = 1U,
+		.imode = CCR_MODE_OCT,
+		.admode = CCR_MODE_OCT,
+		.dmode = CCR_MODE_OCT,
+		.adsize = CCR_ADSIZE_32,
+		.reset_count = 0U,
+		.reset_absize = CCR_ABSIZE_16,
+		.mr_wr_len = 2U,
+		.burst_mr8 = false,
+		.dummy_mode = SF32LB_PSRAM_DUMMY_OPI,
+		.ahb_abmode = CCR_MODE_OCT,
+		.cmd = {
+			.read = 0x0BU,   /* FAST_READ: HyperRAM AHB read command      */
+			.write = 0x02U,  /* WRITE: HyperRAM AHB write command         */
+			.mr_read = 0xE0U,
+			.mr_write = 0x60U,
+			.reset = OPSRAM_CMD_RESET,
+		},
+		.set_dummy_latency = mpi_set_latency_by_freq,
+		.set_fixlat = mpi_set_fixlat_hyper,
+	},
+};
+
 static int memc_sf32lb_mpi_opi_psram_init(const struct device *dev)
 {
 	const struct memc_sf32lb_mpi_opi_psram_config *cfg = dev->config;
+	const struct sf32lb_psram_proto *proto = cfg->proto;
 	struct memc_sf32lb_mpi_opi_psram_data *data = dev->data;
 	MPI_TypeDef *mpi = cfg->mpi;
 	uint32_t freq;
 	int ret;
 
+#if defined(CONFIG_REGULATOR)
 	/* Enable power supply if specified */
 	if (cfg->power_supply != NULL) {
 		if (!device_is_ready(cfg->power_supply)) {
@@ -382,6 +649,7 @@ static int memc_sf32lb_mpi_opi_psram_init(const struct device *dev)
 		k_busy_wait(5000);
 		LOG_DBG("Power supply enabled");
 	}
+#endif /* CONFIG_REGULATOR */
 
 	/* Configure pinmux */
 	ret = pinctrl_apply_state(cfg->pcfg, PINCTRL_STATE_DEFAULT);
@@ -431,18 +699,19 @@ static int memc_sf32lb_mpi_opi_psram_init(const struct device *dev)
 	mpi_set_cs_timing(dev, freq);
 
 	/* Set latency based on frequency */
-	mpi_set_latency_by_freq(dev, freq);
+	proto->set_dummy_latency(data, freq);
 
-	/* Configure DCR: row boundary=7 (1KB), enable DQS */
+	/* Configure DCR: row boundary=7 (1KB), DQS per protocol */
 	ll_mpi_set_row_boundary_size(mpi, 7U);
-	ll_mpi_enable_dqs(mpi);
+	ll_mpi_set_dqs(mpi, proto->dqs);
 
 	/* Set delay values */
 	mpi_set_delays(dev);
 
-	/* Enable QSPI and OPI mode */
+	/* Enable MPI and select protocol */
 	ll_mpi_enable(mpi);
-	ll_mpi_set_protocol(mpi, LL_MPI_PROTO_OPI);
+	ll_mpi_set_protocol(mpi, proto->ll_proto);
+	ll_mpi_set_xlegacy(mpi, proto->xlegacy);
 
 	/* Reset PSRAM */
 	ret = mpi_psram_reset(dev);
@@ -451,38 +720,24 @@ static int memc_sf32lb_mpi_opi_psram_init(const struct device *dev)
 		return ret;
 	}
 
-	/* Write MR8 = 0x03 (burst length) */
-	ret = mpi_mr_write(dev, 8, 0x03);
+	/* Write MR8 = 0x03 (burst length, Xccela OPI only) */
+	if (proto->burst_mr8) {
+		ret = mpi_mr_write(dev, 8, 0x03);
+		if (ret < 0) {
+			LOG_ERR("MR8 write failed: %d", ret);
+			return ret;
+		}
+	}
+
+	/* Program fixed-latency mode (device MR + DCR.FIXLAT) */
+	ret = proto->set_fixlat(dev, freq / 2);
 	if (ret < 0) {
-		LOG_ERR("MR8 write failed: %d", ret);
+		LOG_ERR("Fixed latency config failed: %d", ret);
 		return ret;
 	}
 
-	/* Calculate latencies for fixed latency mode */
-	uint8_t w_lat, r_lat;
-	uint32_t psram_freq = freq / 2;
-
-	if (psram_freq <= 66000000) {
-		w_lat = 3;
-	} else if (psram_freq <= 109000000) {
-		w_lat = 4;
-	} else if (psram_freq <= 133000000) {
-		w_lat = 5;
-	} else if (psram_freq <= 166000000) {
-		w_lat = 6;
-	} else {
-		w_lat = 7;
-	}
-	r_lat = w_lat * 2;
-
-	data->rd_latency = r_lat;
-	data->wr_latency = w_lat;
-
 	/* Configure AHB commands */
 	mpi_configure_ahb_cmd(dev);
-
-	/* Set fixed latency */
-	mpi_set_fixlat(dev, true, r_lat, w_lat);
 
 	/* Set watchdog timer */
 	ll_mpi_set_watchdog(mpi, 0x1FFFFU);
@@ -492,6 +747,12 @@ static int memc_sf32lb_mpi_opi_psram_init(const struct device *dev)
 
 	return 0;
 }
+
+/* power_supply is optional, so only expand its phandle when the property exists. */
+#define MEMC_SF32LB_POWER_SUPPLY(n)                                                        \
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, power_supply),                                    \
+		(DEVICE_DT_GET(DT_INST_PHANDLE(n, power_supply))),                               \
+		(NULL))
 
 #define MEMC_SF32LB_MPI_OPI_PSRAM_INIT(n)                                                          \
 	PINCTRL_DT_INST_DEFINE(n);                                                                 \
@@ -504,10 +765,8 @@ static int memc_sf32lb_mpi_opi_psram_init(const struct device *dev)
 			.size = DT_INST_REG_SIZE_BY_NAME(n, psram),                               \
 			.clock = SF32LB_CLOCK_DT_INST_SPEC_GET(n),                                \
 			.pcfg = PINCTRL_DT_INST_DEV_CONFIG_GET(n),                                \
-			.power_supply = COND_CODE_1(                                               \
-				DT_INST_NODE_HAS_PROP(n, power_supply),                            \
-				(DEVICE_DT_GET(DT_INST_PHANDLE(n, power_supply))),                 \
-				(NULL)),                                                            \
+			.power_supply = MEMC_SF32LB_POWER_SUPPLY(n),                             \
+			.proto = &sf32lb_psram_protos[DT_INST_ENUM_IDX(n, sifli_protocol)],              \
 	};                                                                                         \
                                                                                                    \
 	DEVICE_DT_INST_DEFINE(n, memc_sf32lb_mpi_opi_psram_init, NULL,                            \
