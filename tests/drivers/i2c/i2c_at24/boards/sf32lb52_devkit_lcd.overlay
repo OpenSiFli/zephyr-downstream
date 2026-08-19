@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2026 Core Devices LLC
+ * Copyright (c) 2026 SiFli Technologies(Nanjing) Co., Ltd
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 / {
 	aliases {
 
@@ -5,12 +11,9 @@
 	};
 };
 
-
 &i2c1 {
 	status = "okay";
-
 	clock-frequency = <I2C_BITRATE_FAST>;
-
 
 	/*
 	 * On-board EEPROM is an AT24C32 (32 Kbit = 4096 bytes, 32-byte page,
@@ -18,7 +21,6 @@
 	 */
 	eeprom0: eeprom@50 {
 		compatible = "atmel,at24";
-
 		reg = <0x50>;
 		size = <4096>;
 		pagesize = <32>;

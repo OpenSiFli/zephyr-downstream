@@ -27,7 +27,7 @@ tests:
       - platform:stm32h7s78_dk:DTC_OVERLAY_FILE=boards/stm32h7s78_dk_mspi_psram.overlay
 
   drivers.memc.ram.sf32lb:
-    tags: 
+    tags:
       - drivers
       - memc
 
@@ -35,12 +35,13 @@ tests:
       - sf32lb52_devkit_lcd
       - sf32lb52_core_n16r16
       - sf32lb52_wlan_core_n16r16
+      - sf32lb52_nano_n16r16
     extra_args:
       - platform:sf32lb52_devkit_lcd:DTC_OVERLAY_FILE=boards/sf32lb52_devkit_lcd.overlay
       - platform:sf32lb52_devkit_lcd:EXTRA_CONF_FILE=boards/sf32lb52_devkit_lcd.conf
       - platform:sf32lb52_core_n16r16:DTC_OVERLAY_FILE=boards/sf32lb52_core_n16r16.overlay
       - platform:sf32lb52_core_n16r16:EXTRA_CONF_FILE=boards/sf32lb52_core_n16r16.conf
+      - platform:sf32lb52_nano_n16r16:DTC_OVERLAY_FILE=boards/sf32lb52_nano_n16r16.overlay
+      - platform:sf32lb52_nano_n16r16:EXTRA_CONF_FILE=boards/sf32lb52_nano_n16r16.conf
       - platform:sf32lb52_wlan_core_n16r16:DTC_OVERLAY_FILE=boards/sf32lb52_wlan_core_n16r16.overlay
       - platform:sf32lb52_wlan_core_n16r16:EXTRA_CONF_FILE=boards/sf32lb52_wlan_core_n16r16.conf
-
-

@@ -1,4 +1,6 @@
 /*
+ * Copyright (c) 2026 Core Devices LLC
+ * Copyright (c) 2026 SiFli Technologies(Nanjing) Co., Ltd
  * SPDX-License-Identifier: Apache-2.0
  *
  * Device tree overlay for SF32LB52 PSRAM test
@@ -11,5 +13,4 @@
 };
 
 /* Add memc label to mpi1 for test compatibility */
-memc: &mpi1 {
-};
+memc: &mpi1 {};

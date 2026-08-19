@@ -10,6 +10,8 @@ common:
     - sf32lb52_devkit_lcd
     - sf32lb52_core_n4
     - sf32lb52_core_n16r16
+    - sf32lb52_nano_n4
+    - sf32lb52_nano_n16r16
     - sf32lb52_wlan_core_n16r16
   tags:
     - drivers

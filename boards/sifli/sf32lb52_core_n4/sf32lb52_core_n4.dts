@@ -164,8 +164,6 @@
 	};
 };
 
-
-
 &pinctrl {
 	status = "okay";
 };
