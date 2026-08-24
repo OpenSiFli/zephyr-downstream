@@ -1,0 +1,5 @@
+# Copyright (c) 2025 Core Devices LLC
+# SPDX-License-Identifier: Apache-2.0
+
+config BOARD_SF32LB57X_SPI_HDK_N16R4
+	select SOC_SF32LB573UB7N6

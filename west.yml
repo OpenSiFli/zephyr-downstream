@@ -247,7 +247,7 @@ manifest:
     - name: hal_sifli
       remote: opensifli
       repo-path: zephyr-hal_sifli-downstream
-      revision: 16bb2620cf3f38f6335d5a579c541850d7c5efdf
+      revision: test/test-57x-ll2
       path: modules/hal/sifli
       groups:
         - hal

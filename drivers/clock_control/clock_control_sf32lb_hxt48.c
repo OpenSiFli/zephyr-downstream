@@ -12,7 +12,9 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/clock_control.h>
 
+#if !defined(CONFIG_SOC_SERIES_SF32LB57X)
 #include <ll_hpsys_aon.h>
+#endif
 
 struct clock_control_sf32lb_hxt48_config {
 	uintptr_t aon;
@@ -26,10 +28,18 @@ static int clock_control_sf32lb_hxt48_on(const struct device *dev, clock_control
 
 	ARG_UNUSED(sys);
 
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+	aon->ACR |= HPSYS_AON_ACR_HRC48_REQ |
+		    HPSYS_AON_ACR_HXT48_REQ |
+		    HPSYS_AON_ACR_PWR_REQ;
+	while ((aon->ACR & HPSYS_AON_ACR_HXT48_RDY) == 0U) {
+	}
+#else
 	ll_aon_hxt48_req_set(aon, LL_AON_PM_ACTIVE);
 
 	while (!ll_aon_hxt48_is_ready(aon)) {
 	}
+#endif
 
 	return 0;
 }
@@ -41,7 +51,11 @@ static int clock_control_sf32lb_hxt48_off(const struct device *dev, clock_contro
 
 	ARG_UNUSED(sys);
 
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+	aon->ACR &= ~HPSYS_AON_ACR_HXT48_REQ;
+#else
 	ll_aon_hxt48_req_clear(aon, LL_AON_PM_ACTIVE);
+#endif
 
 	return 0;
 }
@@ -54,7 +68,11 @@ static enum clock_control_status clock_control_sf32lb_hxt48_get_status(const str
 
 	ARG_UNUSED(sys);
 
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+	if ((aon->ACR & HPSYS_AON_ACR_HXT48_RDY) != 0U) {
+#else
 	if (ll_aon_hxt48_is_ready(aon) != 0U) {
+#endif
 		return CLOCK_CONTROL_STATUS_ON;
 	}
 

@@ -1,0 +1,76 @@
+# Copyright (c) 2026 SiFli Technologies(Nanjing) Co., Ltd
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+    SF32LB57x Pin multiplexer and pin configuration controller (HPSYS_PINMUX)
+
+    Singleton node responsible for controlling pin function selection and pin
+    properties. All device pin configurations should be placed in child nodes
+    of the 'pinctrl' node.
+
+    The SF32LB57x pinmux uses 8-bit function selectors and supports the
+    standard pin properties listed below.
+
+compatible: "sifli,sf32lb57x-pinmux"
+
+include: [base.yaml, sifli-sf32lb-cfg.yaml]
+
+properties:
+  reg:
+    required: true
+
+  reg-names:
+    required: true
+
+  clocks:
+    required: true
+
+  sifli,cfg:
+    required: true
+
+  "#sifli,pinmux-cells":
+    type: int
+    const: 2
+
+sifli,pinmux-cells:
+  - port
+  - offset
+
+child-binding:
+  child-binding:
+    include:
+      - name: pincfg-node.yaml
+        property-allowlist:
+          - bias-pull-down
+          - bias-pull-up
+          - input-enable
+          - input-schmitt-enable
+          - slew-rate
+          - drive-strength
+
+    properties:
+      pinmux:
+        required: true
+        type: array
+        description: |
+          An array of pins sharing the same group properties. The pins should
+          be defined using pre-defined macros or the SF32LB_PINMUX utility
+          macro.
+
+      slew-rate:
+        default: 0
+        description: |
+          Select pin output slew rate. 0 selects slow slew rate and 1 selects
+          fast slew rate.
+        enum:
+          - 0
+          - 1
+
+      drive-strength:
+        default: 4
+        enum:
+          - 2
+          - 4
+          - 8
+          - 12
+          - 20

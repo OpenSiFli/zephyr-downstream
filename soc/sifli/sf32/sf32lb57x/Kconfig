@@ -1,0 +1,28 @@
+# Copyright (c) 2025 Core Devices LLC
+# SPDX-License-Identifier: Apache-2.0
+
+config SOC_SERIES_SF32LB57X
+	select ARM
+	select CPU_CORTEX_M33
+	select CPU_HAS_ARM_MPU
+	select CPU_HAS_ARM_SAU
+	select CPU_HAS_FPU
+	select ARMV8_M_DSP
+	select CPU_HAS_ICACHE
+	select CPU_HAS_DCACHE
+	select SOC_EARLY_INIT_HOOK
+	select HAS_POWEROFF
+
+if SOC_SERIES_SF32LB57X
+
+config SF32LB57X_BOOTROM_FLASH_ON_DELAY_MS
+	int "Boot ROM flash on delay (ms)"
+	default 0
+	range 0 4095
+
+config SF32LB57X_BOOTROM_FLASH_OFF_DELAY_MS
+	int "Boot ROM flash off delay (ms)"
+	default 0
+	range 0 255
+
+endif # SOC_SERIES_SF32LB57X

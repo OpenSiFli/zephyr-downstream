@@ -1,0 +1,16 @@
+# Copyright (c) 2025 Core Devices LLC
+# SPDX-License-Identifier: Apache-2.0
+
+config SOC_SERIES_SF32LB57X
+	bool
+	select SOC_FAMILY_SF32
+
+config SOC_SERIES
+	default "sf32lb57x" if SOC_SERIES_SF32LB57X
+
+config SOC_SF32LB573UB7N6
+	bool
+	select SOC_SERIES_SF32LB57X
+
+config SOC
+	default "sf32lb573ub7n6" if SOC_SF32LB573UB7N6

@@ -5,14 +5,23 @@ if(CONFIG_HAS_SIFLI_HAL)
   # Allow using CMSIS headers from HAL without compiling HAL library.
   # This gives us access to register definitions and CMSIS HAL glue code.
   zephyr_compile_definitions(SOC_BF0_HCPU)
+
   if(CONFIG_SOC_SERIES_SF32LB52X)
+    set(SIFLI_CMSIS_DIR ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis/sf32lb52x)
+    set(SIFLI_CMSIS_SOURCE_DIR ${SIFLI_CMSIS_DIR})
+    set(SIFLI_LL_DIR ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/ll/sf32lb52x)
     zephyr_compile_definitions(SF32LB52X)
+  elseif(CONFIG_SOC_SERIES_SF32LB57X)
+    set(SIFLI_CMSIS_DIR ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis/sf32lb57x)
+    set(SIFLI_LL_DIR ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/ll/sf32lb57x)
+    zephyr_compile_definitions(SF32LB57X)
+    zephyr_include_directories(${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis)
   endif()
 
   zephyr_include_directories(${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis/Include)
-  if(CONFIG_SOC_SERIES_SF32LB52X)
-    zephyr_include_directories(${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis/sf32lb52x)
-    zephyr_include_directories(${ZEPHYR_HAL_SIFLI_MODULE_DIR}/ll/sf32lb52x)
+  if(DEFINED SIFLI_CMSIS_DIR)
+    zephyr_include_directories(${SIFLI_CMSIS_DIR})
+    zephyr_include_directories(${SIFLI_LL_DIR})
   endif()
   zephyr_include_directories_ifdef(
     CONFIG_BT_SF32LB
@@ -42,9 +51,9 @@ if(CONFIG_HAS_SIFLI_HAL)
       ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/hal/src/bf0_hal_pmu.c
       ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/hal/src/bf0_hal_rcc.c
     )
-    if(CONFIG_SOC_SERIES_SF32LB52X)
+    if(DEFINED SIFLI_CMSIS_SOURCE_DIR)
       zephyr_library_sources(
-        ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis/sf32lb52x/bf0_pin_const.c
+        ${SIFLI_CMSIS_SOURCE_DIR}/bf0_pin_const.c
       )
     endif()
 
@@ -175,19 +184,32 @@ if(CONFIG_HAS_SIFLI_HAL)
     if(CONFIG_SOC_SERIES_SF32LB52X)
       zephyr_library_sources_ifdef(
         CONFIG_BT_SF32LB
-        ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis/sf32lb52x/bf0_lcpu_init.c
-        ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis/sf32lb52x/lcpu_config_type.c
-        ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis/sf32lb52x/lcpu_install.c
-        ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/cmsis/sf32lb52x/bt_rf_fulcal.c
+        ${SIFLI_CMSIS_SOURCE_DIR}/bf0_lcpu_init.c
+        ${SIFLI_CMSIS_SOURCE_DIR}/lcpu_config_type.c
+        ${SIFLI_CMSIS_SOURCE_DIR}/lcpu_install.c
+        ${SIFLI_CMSIS_SOURCE_DIR}/bt_rf_fulcal.c
+      )
+    elseif(CONFIG_SOC_SERIES_SF32LB57X)
+      zephyr_library_sources_ifdef(
+        CONFIG_BT_SF32LB
+        ${SIFLI_CMSIS_SOURCE_DIR}/bf0_lcpu_init.c
+        ${SIFLI_CMSIS_SOURCE_DIR}/lcpu_config_type.c
+        ${SIFLI_CMSIS_SOURCE_DIR}/lcpu_patch.c
+        ${SIFLI_CMSIS_SOURCE_DIR}/bt_rf_fulcal.c
       )
       if(CONFIG_USE_SIFLI_IPC_QUEUE)
+        message(WARNING "SF32LB57X does not have a dedicated SiFli IPC queue port yet")
+      endif()
+    endif()
+    if(CONFIG_SOC_SERIES_SF32LB52X AND CONFIG_USE_SIFLI_IPC_QUEUE)
         zephyr_library_sources(
             ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/ipc_queue/sf32lb52x/ipc_hw_port.c
         )
         zephyr_include_directories(
           ${ZEPHYR_HAL_SIFLI_MODULE_DIR}/ipc_queue/sf32lb52x
         )
-      endif()
+    endif()
+    if(CONFIG_SOC_SERIES_SF32LB52X)
       set(LCPU_PATCH_FILE "${ZEPHYR_HAL_SIFLI_MODULE_DIR}/zephyr/blobs/sf32lb52_lcpu.h")
       if(EXISTS ${LCPU_PATCH_FILE})
         zephyr_compile_definitions(SF32LB_LCPU_PATCH)

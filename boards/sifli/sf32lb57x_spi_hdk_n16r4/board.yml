@@ -1,0 +1,9 @@
+# Copyright (c) 2025 Core Devices LLC
+# SPDX-License-Identifier: Apache-2.0
+
+board:
+  name: sf32lb57x_spi_hdk_n16r4
+  full_name: SF32LB57X SPI HDK N16R4
+  vendor: sifli
+  socs:
+    - name: sf32lb573ub7n6

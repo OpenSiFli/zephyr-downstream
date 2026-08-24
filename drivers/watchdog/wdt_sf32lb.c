@@ -140,11 +140,15 @@ static int wdt_sf32lb_init(const struct device *dev)
 
 	ll_pmuc_enable_wakeup_source((PMUC_TypeDef *)config->pmuc, LL_PMUC_WKUP_WDT1);
 
+	#if !defined(CONFIG_SOC_SERIES_SF32LB57X)
 	if (config->reset_all) {
 		ll_cfg_wdt1_reboot_set((HPSYS_CFG_TypeDef *)config->cfg);
 	} else {
 		ll_cfg_wdt1_reboot_clear((HPSYS_CFG_TypeDef *)config->cfg);
 	}
+	#else
+	ARG_UNUSED(config->cfg);
+	#endif
 
 	return 0;
 }

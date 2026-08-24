@@ -1,0 +1,44 @@
+/*
+ * Copyright (c) 2025 Core Devices LLC
+ * Copyright (c) 2025-2026 SiFli Technologies(Nanjing) Co., Ltd
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * SF32LB57x HPSYS RAM0/RAM1/RAM2 memory map.
+ *
+ * The 57x uses a 2 KB mailbox/IPC buffer at the top of RAM0 (four 512-byte
+ * channels: HCPU2ACPU, ACPU2HCPU, HCPU2LCPU_CH2, HCPU2LCPU_CH1), see
+ * mem_map.h HPSYS_MBOX_BUF_* / HCPU2x_IPC_QUEUE_BUF_* definitions.
+ */
+#include <zephyr/dt-bindings/memory-attr/memory-attr-arm.h>
+#include <mem.h>
+
+/ {
+	chosen {
+		zephyr,sram = &ram012;
+	};
+
+	soc {
+		ram012: memory@20000000 {
+			compatible = "mmio-sram";
+			reg = <0x20000000 DT_SIZE_K(511)>;
+		};
+
+		sram0_shared: memory@2007fc00 {
+			compatible = "zephyr,memory-region", "mmio-sram";
+			reg = <0x2007fc00 DT_SIZE_K(1)>;
+			device_type = "memory";
+			zephyr,memory-region = "sram0_shared";
+			zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
+		};
+
+		sram1_shared: memory@20400000 {
+			compatible = "zephyr,memory-region", "mmio-sram";
+			reg = <0x20400000 DT_SIZE_K(64)>;
+			device_type = "memory";
+			zephyr,memory-region = "sram1_shared";
+			zephyr,memory-attr = <DT_MEM_ARM(ATTR_MPU_RAM_NOCACHE)>;
+		};
+	};
+};

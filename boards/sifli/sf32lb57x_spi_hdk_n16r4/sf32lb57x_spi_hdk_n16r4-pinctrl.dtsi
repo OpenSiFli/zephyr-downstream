@@ -1,0 +1,101 @@
+/*
+ * Copyright (c) 2025 Core Devices LLC
+ * Copyright (c) 2026 SiFli Technologies(Nanjing) Co., Ltd
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * SF32LB57x pin assignments.
+ *
+ * FSEL values follow the SF32LB57x SDK bf0_pin_const.h function tables.
+ * USART1/SPI1/LCDC1/MPI1 are dedicated functions (FSEL 1, SA12 DQS = FSEL 1),
+ * I2C1 is an arbitrary function on PA45/PA46 (FSEL = function enum 17/16).
+ */
+
+#include <zephyr/dt-bindings/pinctrl/sf32lb57x-pinctrl.h>
+
+&pinctrl {
+	usart1_default: usart1_default {
+		group1 {
+			pinmux = <PA19_USART1_TXD>;
+		};
+
+		group2 {
+			pinmux = <PA18_USART1_RXD>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+
+	i2c1_default: i2c1_default {
+		group1 {
+			pinmux = <PA46_I2C1_SCL>, <PA45_I2C1_SDA>;
+			input-enable;
+		};
+	};
+
+	spi1_default: spi1_default {
+		group1 {
+			pinmux = <PA24_SPI1_DIO>, <PA28_SPI1_CLK>, <PA29_SPI1_CS>;
+			input-enable;
+			input-schmitt-enable;
+		};
+
+		group2 {
+			pinmux = <PA25_SPI1_DI>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down;
+		};
+	};
+
+	lcdc_qspi_default: lcdc_qspi_default {
+		group1 {
+			pinmux = <PA02_LCDC1_SPI_TE>,
+				 <PA03_LCDC1_SPI_CS>,
+				 <PA04_LCDC1_SPI_CLK>,
+				 <PA05_LCDC1_SPI_DIO0>,
+				 <PA06_LCDC1_SPI_DIO1>,
+				 <PA07_LCDC1_SPI_DIO2>,
+				 <PA08_LCDC1_SPI_DIO3>;
+			input-enable;
+		};
+	};
+
+	/* MPI1 OPI PSRAM pinmux configuration (SDK pinmap mode 1: DM/CLKB/DQS) */
+	mpi1_default: mpi1_default {
+		group1 {
+			pinmux = <SA01_MPI1_PSRAM_DIO0>, <SA02_MPI1_PSRAM_DIO1>,
+				 <SA03_MPI1_PSRAM_DIO2>, <SA04_MPI1_PSRAM_DIO3>,
+				 <SA08_MPI1_PSRAM_DIO4>, <SA09_MPI1_PSRAM_DIO5>,
+				 <SA10_MPI1_PSRAM_DIO6>, <SA11_MPI1_PSRAM_DIO7>,
+				 <SA12_MPI1_PSRAM_DQS>, <SA00_MPI1_PSRAM_DM>;
+			bias-pull-down;
+			input-enable;
+			input-schmitt-enable;
+			slew-rate = <1>;
+		};
+
+		group2 {
+			pinmux = <SA07_MPI1_PSRAM_CLK>, <SA06_MPI1_PSRAM_CLKB>,
+				 <SA05_MPI1_PSRAM_CS>;
+			input-enable;
+			input-schmitt-enable;
+			slew-rate = <1>;
+		};
+	};
+
+	/*
+	 * The 57x 32K crystal is on dedicated pins (not muxed through
+	 * HPSYS_PINMUX), so no pin configuration is required here. An empty
+	 * state is still needed because the PMUC clock driver requires
+	 * pinctrl-0 whenever LXT32 is enabled.
+	 */
+	lxt32_default: lxt32_default {
+	};
+};
+
+&pmuc_clk {
+	pinctrl-0 = <&lxt32_default>;
+	pinctrl-names = "default";
+};

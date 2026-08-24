@@ -4,11 +4,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+#define DT_DRV_COMPAT sifli_sf32lb57x_pinmux
+#else
 #define DT_DRV_COMPAT sifli_sf32lb52x_pinmux
+#endif
 
 #include <zephyr/arch/cpu.h>
 #include <zephyr/devicetree.h>
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+#include <zephyr/dt-bindings/pinctrl/sf32lb57x-pinctrl.h>
+#else
 #include <zephyr/dt-bindings/pinctrl/sf32lb52x-pinctrl.h>
+#endif
 #include <zephyr/drivers/clock_control/sf32lb.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/sys/sys_io.h>
@@ -26,15 +34,28 @@ struct sf32lb52x_pinctrl_config {
 
 static bool pinctrl_sf32lb52x_is_pa39_42(uint8_t port, uint8_t pad_num)
 {
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+	/* The PA39-42 drive strength quirk is SF32LB52x-specific. */
+	ARG_UNUSED(port);
+	ARG_UNUSED(pad_num);
+	return false;
+#else
 	return (port == SF32LB_PORT_PA) && (pad_num >= 39U) && (pad_num <= 42U);
+#endif
 }
 
 static bool pinctrl_sf32lb52x_uses_i2c_mode(pinctrl_soc_pin_t pin)
 {
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+	/* The 57x has no HPSYS_CFG PINR remap mechanism. */
+	ARG_UNUSED(pin);
+	return false;
+#else
 	uint8_t pinr_offset = FIELD_GET(SF32LB_PINR_OFFSET_MSK, pin);
 
 	return (FIELD_GET(SF32LB_FSEL_MSK, pin) == 4U) && (pinr_offset >= 0x48U) &&
 	       (pinr_offset <= 0x54U);
+#endif
 }
 
 static int pinctrl_configure_pin(pinctrl_soc_pin_t pin)
@@ -79,12 +100,17 @@ static int pinctrl_configure_pin(pinctrl_soc_pin_t pin)
 	}
 
 	/* configure HPSYS_CFG *_PINR if applicable */
+	#if !defined(CONFIG_SOC_SERIES_SF32LB57X)
 	pinr_offset = FIELD_GET(SF32LB_PINR_OFFSET_MSK, pin);
 	if (pinr_offset != 0U) {
 		ll_cfg_set_pinr_field((HPSYS_CFG_TypeDef *)config->cfg, pinr_offset,
 				      FIELD_GET(SF32LB_PINR_FIELD_MSK, pin),
 				      FIELD_GET(SF32LB_PAD_MSK, pin));
 	}
+	#else
+	/* The 57x has no PINR remap registers. */
+	ARG_UNUSED(pinr_offset);
+	#endif
 
 	/* configure HPSYS_PINMUX */
 	switch (FIELD_GET(SF32LB_PORT_MSK, pin)) {

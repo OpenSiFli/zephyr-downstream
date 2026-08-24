@@ -55,13 +55,22 @@ struct sf32lb_pmuc_clk_config {
 static void sf32lb_pmuc_select_lpclk(const struct sf32lb_pmuc_clk_config *config)
 {
 	PMUC_TypeDef *pmuc = (PMUC_TypeDef *)config->base;
+#if !defined(CONFIG_SOC_SERIES_SF32LB57X)
 	uint32_t lpclk = LL_PMUC_LPCLK_LRC10;
+#endif
 
+#if defined(CONFIG_SOC_SERIES_SF32LB52X)
 	if (config->clkwdt_src == SF32LB_CLKWDT_SRC_LRC32) {
 		lpclk = LL_PMUC_LPCLK_LRC32;
 	}
 
 	ll_pmuc_select_lpclk(pmuc, lpclk);
+#elif defined(CONFIG_SOC_SERIES_SF32LB57X)
+	if (config->clkwdt_src == SF32LB_CLKWDT_SRC_LRC32) {
+		ll_pmuc_set_sel_wdt(pmuc);
+	}
+
+#endif
 }
 
 static int sf32lb_pmuc_lxt32_on(const struct sf32lb_pmuc_clk_config *config)
@@ -96,10 +105,13 @@ static int sf32lb_pmuc_lxt32_off(const struct sf32lb_pmuc_clk_config *config)
 static int sf32lb_pmuc_clk_on(const struct device *dev, clock_control_subsys_t sys)
 {
 	const struct sf32lb_pmuc_clk_config *config = dev->config;
+#if !defined(CONFIG_SOC_SERIES_SF32LB57X)
 	PMUC_TypeDef *pmuc = (PMUC_TypeDef *)config->base;
+#endif
 	uint32_t id = (uint32_t)(uintptr_t)sys;
 
 	switch (id) {
+#if !defined(CONFIG_SOC_SERIES_SF32LB57X)
 	case SF32LB_PMUC_CLOCK_LRC10:
 		ll_pmuc_enable_lrc10(pmuc);
 		while (ll_pmuc_is_lrc10_ready(pmuc) == 0U) {
@@ -110,6 +122,7 @@ static int sf32lb_pmuc_clk_on(const struct device *dev, clock_control_subsys_t s
 		while (ll_pmuc_is_lrc32_ready(pmuc) == 0U) {
 		}
 		return 0;
+#endif
 	case SF32LB_PMUC_CLOCK_LXT32:
 		if (config->has_lxt32 == 0U) {
 			return -ENOTSUP;
@@ -125,16 +138,20 @@ static int sf32lb_pmuc_clk_on(const struct device *dev, clock_control_subsys_t s
 static int sf32lb_pmuc_clk_off(const struct device *dev, clock_control_subsys_t sys)
 {
 	const struct sf32lb_pmuc_clk_config *config = dev->config;
+#if !defined(CONFIG_SOC_SERIES_SF32LB57X)
 	PMUC_TypeDef *pmuc = (PMUC_TypeDef *)config->base;
+#endif
 	uint32_t id = (uint32_t)(uintptr_t)sys;
 
 	switch (id) {
+#if !defined(CONFIG_SOC_SERIES_SF32LB57X)
 	case SF32LB_PMUC_CLOCK_LRC10:
 		ll_pmuc_disable_lrc10(pmuc);
 		return 0;
 	case SF32LB_PMUC_CLOCK_LRC32:
 		ll_pmuc_disable_lrc32(pmuc);
 		return 0;
+#endif
 	case SF32LB_PMUC_CLOCK_LXT32:
 		if (config->has_lxt32 == 0U) {
 			return -ENOTSUP;
@@ -156,12 +173,14 @@ static enum clock_control_status sf32lb_pmuc_clk_get_status(const struct device 
 	uint32_t ready;
 
 	switch (id) {
+#if !defined(CONFIG_SOC_SERIES_SF32LB57X)
 	case SF32LB_PMUC_CLOCK_LRC10:
 		ready = ll_pmuc_is_lrc10_ready(pmuc);
 		break;
 	case SF32LB_PMUC_CLOCK_LRC32:
 		ready = ll_pmuc_is_lrc32_ready(pmuc);
 		break;
+#endif
 	case SF32LB_PMUC_CLOCK_LXT32:
 		if (config->has_lxt32 == 0U) {
 			return CLOCK_CONTROL_STATUS_OFF;

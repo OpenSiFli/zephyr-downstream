@@ -34,19 +34,19 @@ config USE_SIFLI_HAL_AON
 
 config USE_SIFLI_HAL_ATIM
 	bool "ATIM SiFli HAL module"
-	depends on SOC_SERIES_SF32LB52X
+	depends on SOC_SERIES_SF32LB52X || SOC_SERIES_SF32LB57X
 	help
 	  Enable ATIM SiFli HAL module driver
 
 config USE_SIFLI_HAL_AUDCODEC
 	bool "AUDCODEC SiFli HAL module"
-	depends on SOC_SERIES_SF32LB52X
+	depends on SOC_SERIES_SF32LB52X || SOC_SERIES_SF32LB57X
 	help
 	  Enable AUDCODEC SiFli HAL module driver
 
 config USE_SIFLI_HAL_AUDPRC
 	bool "AUDPRC SiFli HAL module"
-	depends on SOC_SERIES_SF32LB52X
+	depends on SOC_SERIES_SF32LB52X || SOC_SERIES_SF32LB57X
 	help
 	  Enable AUDPRC SiFli HAL module driver
 
@@ -97,7 +97,7 @@ config USE_SIFLI_HAL_GPT
 
 config USE_SIFLI_HAL_HASH
 	bool "HASH SiFli HAL module"
-	depends on SOC_SERIES_SF32LB52X
+	depends on SOC_SERIES_SF32LB52X || SOC_SERIES_SF32LB57X
 	help
 	  Enable HASH SiFli HAL module driver
 
@@ -158,7 +158,7 @@ config USE_SIFLI_HAL_MMC
 
 config USE_SIFLI_HAL_MPI
 	bool "MPI SiFli HAL module"
-	depends on SOC_SERIES_SF32LB52X
+	depends on SOC_SERIES_SF32LB52X || SOC_SERIES_SF32LB57X
 	help
 	  Enable MPI SiFli HAL module driver
 
@@ -194,7 +194,7 @@ config USE_SIFLI_HAL_RTC
 
 config USE_SIFLI_HAL_SD
 	bool "SD SiFli HAL module"
-	depends on SOC_SERIES_SF32LB52X
+	depends on SOC_SERIES_SF32LB52X || SOC_SERIES_SF32LB57X
 	help
 	  Enable SD SiFli HAL module driver
 
@@ -205,7 +205,7 @@ config USE_SIFLI_HAL_SDHCI
 
 config USE_SIFLI_HAL_SECU
 	bool "SECU SiFli HAL module"
-	depends on SOC_SERIES_SF32LB52X
+	depends on SOC_SERIES_SF32LB52X || SOC_SERIES_SF32LB57X
 	help
 	  Enable SECU SiFli HAL module driver
 

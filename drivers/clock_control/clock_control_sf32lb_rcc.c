@@ -16,12 +16,15 @@
 #include <zephyr/dt-bindings/clock/sf32lb-clocks-common.h>
 #include <zephyr/dt-bindings/clock/sf32lb52x-clocks.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/toolchain.h>
 
+#if !defined(CONFIG_SOC_SERIES_SF32LB57X)
 #include <ll_hpsys_cfg.h>
 #include <ll_pmuc.h>
 #include <ll_rcc.h>
+#endif
 
 #define SF32LB_CLOCK_FREQ_BY_NAME(inst, name)                                                      \
 	COND_CODE_1(DT_NODE_HAS_COMPAT(DT_INST_CLOCKS_CTLR_BY_NAME(inst, name),                   \
@@ -140,10 +143,36 @@ struct clock_control_sf32lb_rcc_config {
 	const struct device *hxt48;
 };
 
+static inline void sf32lb_enable_dll_prerequisites(uintptr_t pmuc, uintptr_t cfg)
+{
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+	PMUC_TypeDef *pmuc_regs = (PMUC_TypeDef *)pmuc;
+	HPSYS_CFG_TypeDef *cfg_regs = (HPSYS_CFG_TypeDef *)cfg;
+
+	pmuc_regs->HXT_CR1 |= PMUC_HXT_CR1_BUF_DLL_EN;
+	cfg_regs->ANAU_CR |= HPSYS_CFG_ANAU_CR_EN_BG;
+#else
+	ll_pmuc_hxt48_enable_dll_buf((PMUC_TypeDef *)pmuc);
+	ll_cfg_hpbg_enable((HPSYS_CFG_TypeDef *)cfg);
+#endif
+}
+
 static inline void configure_dll(HPSYS_RCC_TypeDef *rcc, uint32_t freq, uint32_t dll_idx)
 {
 	uint32_t stg = (freq / 24000000UL) - 1U;
 
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+	volatile uint32_t *cr = (dll_idx == 0U) ? &rcc->DLL1CR : &rcc->DLL2CR;
+
+	*cr &= ~HPSYS_RCC_DLL1CR_EN;
+	*cr = (*cr & ~HPSYS_RCC_DLL1CR_IN_DIV2_EN) | HPSYS_RCC_DLL1CR_IN_DIV2_EN;
+	*cr &= ~HPSYS_RCC_DLL1CR_OUT_DIV2_EN;
+	*cr = (*cr & ~HPSYS_RCC_DLL1CR_STG) |
+	      ((stg << HPSYS_RCC_DLL1CR_STG_Pos) & HPSYS_RCC_DLL1CR_STG);
+	*cr |= HPSYS_RCC_DLL1CR_EN;
+	while ((*cr & HPSYS_RCC_DLL1CR_READY) == 0U) {
+	}
+#else
 	ll_rcc_dll_disable(rcc, dll_idx);
 	ll_rcc_dll_set_out_div2(rcc, dll_idx, 0U);
 	ll_rcc_dll_set_in_div2(rcc, dll_idx, 1U);
@@ -151,7 +180,52 @@ static inline void configure_dll(HPSYS_RCC_TypeDef *rcc, uint32_t freq, uint32_t
 	ll_rcc_dll_enable(rcc, dll_idx);
 	while (!ll_rcc_dll_is_ready(rcc, dll_idx)) {
 	}
+#endif
 }
+
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+static inline void sf32lb57_set_field(volatile uint32_t *reg, uint32_t mask, uint32_t pos,
+					      uint32_t value)
+{
+	*reg = (*reg & ~mask) | ((value << pos) & mask);
+}
+
+static inline void sf32lb57_enable_clock(HPSYS_RCC_TypeDef *rcc, uint16_t id, bool enable)
+{
+	uint32_t offset = FIELD_GET(SF32LB_CLOCK_OFFSET_MSK, id);
+	uint32_t mask = BIT(FIELD_GET(SF32LB_CLOCK_BIT_MSK, id));
+	volatile uint32_t *reg = (offset == SF32LB52X_RCC_ENR1) ? &rcc->ENR1 : &rcc->ENR2;
+
+	if (enable) {
+		*reg |= mask;
+	} else {
+		*reg &= ~mask;
+	}
+}
+
+static inline void sf32lb57_set_clock_sources(HPSYS_RCC_TypeDef *rcc,
+					      const struct clock_control_sf32lb_rcc_config *config)
+{
+	sf32lb57_set_field(&rcc->CFGR, HPSYS_RCC_CFGR_HDIV, HPSYS_RCC_CFGR_HDIV_Pos,
+			   config->hdiv);
+	sf32lb57_set_field(&rcc->CFGR, HPSYS_RCC_CFGR_PDIV1, HPSYS_RCC_CFGR_PDIV1_Pos,
+			   config->pdiv1);
+	sf32lb57_set_field(&rcc->CFGR, HPSYS_RCC_CFGR_PDIV2, HPSYS_RCC_CFGR_PDIV2_Pos,
+			   config->pdiv2);
+	sf32lb57_set_field(&rcc->CSR, HPSYS_RCC_CSR_SEL_SYS, HPSYS_RCC_CSR_SEL_SYS_Pos,
+			   config->sys_clk_src);
+	sf32lb57_set_field(&rcc->CSR, HPSYS_RCC_CSR_SEL_PERI, HPSYS_RCC_CSR_SEL_PERI_Pos,
+			   config->peri_clk_src);
+	sf32lb57_set_field(&rcc->CSR, HPSYS_RCC_CSR_SEL_MPI1, HPSYS_RCC_CSR_SEL_MPI1_Pos,
+			   config->mpi1_clk_src);
+	sf32lb57_set_field(&rcc->CSR, HPSYS_RCC_CSR_SEL_MPI2, HPSYS_RCC_CSR_SEL_MPI2_Pos,
+			   config->mpi2_clk_src);
+	sf32lb57_set_field(&rcc->CSR, HPSYS_RCC_CSR_SEL_USBC, HPSYS_RCC_CSR_SEL_USBC_Pos,
+			   config->usb_clk_src);
+	sf32lb57_set_field(&rcc->USBCR, HPSYS_RCC_USBCR_DIV, HPSYS_RCC_USBCR_DIV_Pos,
+			   config->usb_div);
+}
+#endif
 
 static bool sf32lb_rcc_needs_hxt48(const struct clock_control_sf32lb_rcc_config *config)
 {
@@ -233,11 +307,16 @@ static int clock_control_sf32lb_rcc_on(const struct device *dev, clock_control_s
 	const struct clock_control_sf32lb_rcc_config *config = dev->config;
 	HPSYS_RCC_TypeDef *rcc = (HPSYS_RCC_TypeDef *)config->base;
 	uint16_t id = *(uint16_t *)sys;
+
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+	sf32lb57_enable_clock(rcc, id, true);
+#else
 	uint32_t offset = FIELD_GET(SF32LB_CLOCK_OFFSET_MSK, id);
 	uint32_t mask = BIT(FIELD_GET(SF32LB_CLOCK_BIT_MSK, id));
 	uint32_t group = (offset - SF32LB52X_RCC_ENR1) / 4U;
 
 	ll_rcc_enable_clock(rcc, group, mask);
+#endif
 
 	return 0;
 }
@@ -247,11 +326,16 @@ static int clock_control_sf32lb_rcc_off(const struct device *dev, clock_control_
 	const struct clock_control_sf32lb_rcc_config *config = dev->config;
 	HPSYS_RCC_TypeDef *rcc = (HPSYS_RCC_TypeDef *)config->base;
 	uint16_t id = *(uint16_t *)sys;
+
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+	sf32lb57_enable_clock(rcc, id, false);
+#else
 	uint32_t offset = FIELD_GET(SF32LB_CLOCK_OFFSET_MSK, id);
 	uint32_t mask = BIT(FIELD_GET(SF32LB_CLOCK_BIT_MSK, id));
 	uint32_t group = (offset - SF32LB52X_RCC_ENR1) / 4U;
 
 	ll_rcc_disable_clock(rcc, group, mask);
+#endif
 
 	return 0;
 }
@@ -334,9 +418,14 @@ static enum clock_control_status clock_control_sf32lb_rcc_get_status(const struc
 	uint16_t id = *(uint16_t *)sys;
 	uint32_t offset = FIELD_GET(SF32LB_CLOCK_OFFSET_MSK, id);
 	uint32_t mask = BIT(FIELD_GET(SF32LB_CLOCK_BIT_MSK, id));
+
+#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+	if ((((offset == SF32LB52X_RCC_ENR1) ? rcc->ENR1 : rcc->ENR2) & mask) != 0U) {
+#else
 	uint32_t group = (offset - SF32LB52X_RCC_ENR1) / 4U;
 
 	if (ll_rcc_is_clock_enabled(rcc, group, mask) != 0U) {
+#endif
 		return CLOCK_CONTROL_STATUS_ON;
 	}
 
@@ -370,23 +459,40 @@ static int clock_control_sf32lb_rcc_init(const struct device *dev)
 
 	if (config->dll1_freq != 0U || config->dll2_freq != 0U) {
 		/* Enable HXT48 DLL buffer and CAU2 HPBG rail before DLL config */
-		ll_pmuc_hxt48_enable_dll_buf((PMUC_TypeDef *)config->pmuc);
-		ll_cfg_hpbg_enable((HPSYS_CFG_TypeDef *)config->cfg);
+		sf32lb_enable_dll_prerequisites(config->pmuc, config->cfg);
 
 		/* Switch sys/peri clock to HXT48 before DLL configuration */
+	#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+		sf32lb57_set_field(&rcc->CSR, HPSYS_RCC_CSR_SEL_SYS, HPSYS_RCC_CSR_SEL_SYS_Pos,
+				   SF32LB_SYS_CLK_SRC_HXT48);
+		sf32lb57_set_field(&rcc->CSR, HPSYS_RCC_CSR_SEL_PERI, HPSYS_RCC_CSR_SEL_PERI_Pos,
+				   SF32LB_PERI_CLK_IDX_HXT48);
+	#else
 		ll_rcc_set_sys_clock_source(rcc, LL_RCC_SYS_CLKSRC_HXT48);
 		ll_rcc_set_peri_clock_source(rcc, LL_RCC_PERI_CLKSRC_HXT48);
+	#endif
 
 		if (config->dll1_freq != 0U) {
+		#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+			configure_dll(rcc, config->dll1_freq, 0U);
+		#else
 			configure_dll(rcc, config->dll1_freq, LL_RCC_DLL_INDEX_1);
+		#endif
 		}
 
 		if (config->dll2_freq != 0U) {
+		#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+			configure_dll(rcc, config->dll2_freq, 1U);
+		#else
 			configure_dll(rcc, config->dll2_freq, LL_RCC_DLL_INDEX_2);
+		#endif
 		}
 	}
 
-	/* configure HDIV/PDIV1/PDIV2 dividers */
+		/* configure HDIV/PDIV1/PDIV2 dividers */
+	#if defined(CONFIG_SOC_SERIES_SF32LB57X)
+		sf32lb57_set_clock_sources(rcc, config);
+	#else
 	ll_rcc_set_ahb_div(rcc, config->hdiv);
 	ll_rcc_set_apb1_div(rcc, config->pdiv1);
 	ll_rcc_set_apb2_div(rcc, config->pdiv2);
@@ -400,6 +506,7 @@ static int clock_control_sf32lb_rcc_init(const struct device *dev)
 
 	/* configure USB divider */
 	ll_rcc_set_usb_div(rcc, config->usb_div);
+	#endif
 
 	return 0;
 }
