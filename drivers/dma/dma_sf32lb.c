@@ -118,26 +118,21 @@ static void dma_sf32lb_isr(const struct device *dev, uint8_t channel)
 		status = -EINPROGRESS;
 	}
 
-	if (status == DMA_STATUS_COMPLETE || status < 0) {
-		ll_dmac_channel_t *chx = dma_sf32lb_get_channel(dmac, channel);
-
+	if (status < 0 || (status == DMA_STATUS_COMPLETE && !circular)) {
 		/* The DMAC does not clear the channel EN bit by itself once a
 		 * one-shot transfer finishes. Disable the channel on transfer
-		 * completion or error (unless circular mode is active, where the
-		 * channel must keep running) so it can be reconfigured from the
-		 * completion callback.
+		 * completion or error. Circular transfers remain enabled on a
+		 * normal completion so the next half/full interrupt can be handled.
 		 */
-		if (!circular) {
-			ll_dmac_disable_channel(chx);
-		}
+		ll_dmac_disable_channel(dma_sf32lb_get_channel(dmac, channel));
 	}
+
+	dma_sf32lb_clear_all_flags(dmac, channel);
 
 	if (status != -EINPROGRESS && config->channels[channel].callback != NULL) {
 		config->channels[channel].callback(dev, config->channels[channel].user_data,
 						   channel, status);
 	}
-
-	dma_sf32lb_clear_all_flags(dmac, channel);
 }
 
 #define DMA_SF32LB_IRQ_DEFINE(n, _)                                                                \
@@ -180,7 +175,6 @@ static int check_dma_config(uint32_t channel, struct dma_config *config_dma,
 			config_dma->channel_priority, DMAC_MAX_PL);
 		return -EINVAL;
 	}
-
 	if ((config_dma->head_block->source_addr_adj == DMA_ADDR_ADJ_DECREMENT) |
 	    (config_dma->head_block->dest_addr_adj == DMA_ADDR_ADJ_DECREMENT)) {
 		LOG_ERR("Address decrement not supported");
@@ -354,7 +348,6 @@ static int dma_sf32lb_reload(const struct device *dev, uint32_t channel, uint32_
 		size >>= 2;
 	} else if (config->channels[channel].size == 2) {
 		size >>= 1;
-	} else {
 	}
 
 	ll_dmac_set_ndt(chx, size);
