@@ -237,10 +237,6 @@ static int spi_sf32lb_configure(const struct device *dev, const struct spi_confi
 		ll_spi_disable_hold_frame_low(spi);
 	}
 
-	if (config->operation & SPI_LOCK_ON) {
-		return -ENOTSUP;
-	}
-
 	ll_spi_disable(spi);
 	ll_spi_config_protocol(spi, &protocol);
 	ll_spi_config_role(spi, &role);
@@ -716,11 +712,20 @@ static int spi_sf32lb_transceive_async(const struct device *dev, const struct sp
 
 static int spi_sf32lb_release(const struct device *dev, const struct spi_config *config)
 {
+	const struct spi_sf32lb_config *cfg = dev->config;
 	struct spi_sf32lb_data *data = dev->data;
+	SPI_TypeDef *spi = spi_sf32lb_regs(cfg);
+	int ret;
+
+	ARG_UNUSED(config);
+
+	ret = spi_sf32lb_wait_not_busy(dev);
+	ll_spi_disable_hold_frame_low(spi);
 
 	spi_context_unlock_unconditionally(&data->ctx);
+	data->ctx.config = NULL;
 
-	return 0;
+	return ret;
 }
 
 static DEVICE_API(spi, spi_sf32lb_api) = {
