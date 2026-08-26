@@ -45,6 +45,8 @@ struct dma_sf32lb_channel {
 	void *user_data;
 	uint32_t size;
 	enum dma_channel_direction direction;
+	bool half_complete_callback_en;
+	bool circular;
 };
 
 struct dma_sf32lb_data {
@@ -96,13 +98,17 @@ static void dma_sf32lb_isr(const struct device *dev, uint8_t channel)
 	uint32_t ll_channel = dma_sf32lb_ll_channel(channel);
 	uint32_t isr;
 	uint32_t channel_flags;
+	bool circular;
 	int status;
 
 	isr = ll_dmac_get_isr(dmac);
 	channel_flags = (isr >> ll_dmac_channel_flag_shift(ll_channel)) & 0xFU;
+	circular = config->channels[channel].circular;
 	if (ll_dmac_is_active_flag_tc(dmac, ll_channel) != 0U) {
 		status = DMA_STATUS_COMPLETE;
-		atomic_clear_bit(data->status, channel);
+		if (!circular) {
+			atomic_clear_bit(data->status, channel);
+		}
 	} else if (ll_dmac_is_active_flag_ht(dmac, ll_channel) != 0U) {
 		status = DMA_STATUS_HALF_COMPLETE;
 	} else if (channel_flags != 0U) {
@@ -121,7 +127,7 @@ static void dma_sf32lb_isr(const struct device *dev, uint8_t channel)
 		 * channel must keep running) so it can be reconfigured from the
 		 * completion callback.
 		 */
-		if ((sys_read32((mem_addr_t)&chx->CCR) & DMAC_CCR1_CIRC) == 0U) {
+		if (!circular) {
 			ll_dmac_disable_channel(chx);
 		}
 	}
@@ -135,7 +141,7 @@ static void dma_sf32lb_isr(const struct device *dev, uint8_t channel)
 }
 
 #define DMA_SF32LB_IRQ_DEFINE(n, _)                                                                \
-	static void dma_sf32lb_isr_ch##n(const struct device *dev)                                 \
+	static void dma_sf32lb_isr_ch##n(const struct device *dev)                                  \
 	{                                                                                          \
 		dma_sf32lb_isr(dev, n);                                                            \
 	}
@@ -211,6 +217,7 @@ static int dma_sf32lb_config(const struct device *dev, uint32_t channel,
 	struct dma_sf32lb_data *data = dev->data;
 	DMAC_TypeDef *dmac = (DMAC_TypeDef *)config->dmac;
 	ll_dmac_channel_t *chx = dma_sf32lb_get_channel(dmac, channel);
+	bool circular;
 	ll_dmac_channel_config_t ch_cfg = {
 		.mem2mem = LL_DMAC_MEM2MEM_DISABLE,
 		.priority = FIELD_PREP(DMAC_CCR1_PL_Msk, config_dma->channel_priority),
@@ -238,7 +245,9 @@ static int dma_sf32lb_config(const struct device *dev, uint32_t channel,
 		return -EIO;
 	}
 
-	if (config_dma->head_block->dest_reload_en || config_dma->head_block->source_reload_en) {
+	circular = config_dma->cyclic || config_dma->head_block->dest_reload_en ||
+		config_dma->head_block->source_reload_en;
+	if (circular) {
 		ch_cfg.circ = LL_DMAC_CIRC_ENABLE;
 	}
 
@@ -308,6 +317,9 @@ static int dma_sf32lb_config(const struct device *dev, uint32_t channel,
 	config->channels[channel].user_data = config_dma->user_data;
 	config->channels[channel].direction = config_dma->channel_direction;
 	config->channels[channel].size = config_dma->source_data_size;
+	config->channels[channel].half_complete_callback_en =
+		config_dma->half_complete_callback_en != 0U;
+	config->channels[channel].circular = circular;
 
 	return 0;
 }
@@ -393,6 +405,9 @@ static int dma_sf32lb_start(const struct device *dev, uint32_t channel)
 		ll_dmac_enable_it_tc(chx);
 		ll_dmac_enable_it_te(chx);
 	}
+	if (config->channels[channel].half_complete_callback_en) {
+		ll_dmac_enable_it_ht(chx);
+	}
 	ll_dmac_enable_channel(chx);
 	atomic_set_bit(data->status, channel);
 
@@ -415,6 +430,7 @@ static int dma_sf32lb_stop(const struct device *dev, uint32_t channel)
 	/* disable DMA and complete/error IRQs */
 	ll_dmac_disable_channel(chx);
 	ll_dmac_disable_it_tc(chx);
+	ll_dmac_disable_it_ht(chx);
 	ll_dmac_disable_it_te(chx);
 
 	atomic_clear_bit(data->status, channel);
@@ -438,7 +454,8 @@ static int dma_sf32lb_get_status(const struct device *dev, uint32_t channel,
 
 	stat->dir = config->channels[channel].direction;
 	stat->pending_length = ll_dmac_get_ndt(chx);
-	stat->busy = atomic_test_bit(data->status, channel) && (stat->pending_length != 0U);
+	stat->busy = atomic_test_bit(data->status, channel) &&
+		(config->channels[channel].circular || stat->pending_length != 0U);
 
 	return 0;
 }
