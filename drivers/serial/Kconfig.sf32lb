@@ -9,7 +9,49 @@ config UART_SF32LB
 	select SERIAL_SUPPORT_INTERRUPT
 	select SERIAL_SUPPORT_ASYNC if DT_HAS_SIFLI_SF32LB_DMAC_ENABLED
 	select DMA if UART_ASYNC_API
+	select RING_BUFFER if UART_ASYNC_API
 	select PINCTRL
 	select CLOCK_CONTROL
 	help
 	  This option enables the SiFli SF32LB UART driver.
+
+config UART_SF32LB_ASYNC_RX_IRQ_FIFO_SIZE
+	int "Asynchronous UART RX interrupt fallback buffer size"
+	depends on UART_SF32LB && UART_ASYNC_API
+	range 2 32767
+	default 128
+	help
+	  Size of the temporary buffer used by the normal-mode single-byte
+	  asynchronous RX fallback.
+
+config UART_SF32LB_ASYNC_RX_CYCLIC
+	bool "Use cyclic DMA for asynchronous UART RX"
+	depends on UART_SF32LB && UART_ASYNC_API && KERNEL_MEM_POOL
+	default y
+	help
+	  Use a cyclic DMA buffer for asynchronous UART reception.
+
+	  The driver allocates an internal DMA buffer from the system heap when
+	  uart_rx_enable() is called. The buffer passed to uart_rx_enable()
+	  remains the application-visible receive buffer. The application must
+	  consume RX_RDY data before the internal DMA buffer wraps and overwrites
+	  data that has not yet been copied out.
+
+config UART_SF32LB_ASYNC_RX_BUFFER_SIZE
+	int "Asynchronous UART RX cyclic buffer size"
+	depends on UART_SF32LB_ASYNC_RX_CYCLIC
+	range 2 65535
+	default 512
+	help
+	  Size in bytes of the cyclic RX buffer allocated from the system
+	  heap for each active SF32LB UART receiver.
+
+config HEAP_MEM_POOL_ADD_SIZE_UART_SF32LB
+	int
+	depends on UART_SF32LB_ASYNC_RX_CYCLIC
+	default UART_SF32LB_ASYNC_RX_BUFFER_SIZE
+
+config HEAP_MEM_POOL_ADD_SIZE_UART_SF32LB_ALIGN
+	int
+	depends on UART_SF32LB_ASYNC_RX_CYCLIC
+	default 64
