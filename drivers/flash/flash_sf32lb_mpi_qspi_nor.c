@@ -12,6 +12,7 @@
 
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/drivers/clock_control/sf32lb.h>
 #include <zephyr/drivers/dma/sf32lb.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/cache.h>
@@ -99,6 +100,7 @@ struct flash_sf32lb_mpi_qspi_nor_data {
 	MPI_TypeDef *mpi;
 	uintptr_t base;
 	uint32_t size;
+	struct sf32lb_clock_dt_spec clock;
 	struct sf32lb_dma_dt_spec dma;
 	uint8_t write_buf[SPI_NOR_PAGE_SIZE] __aligned(4);
 	uint8_t lines;
@@ -578,6 +580,11 @@ static __ramfunc int flash_sf32lb_mpi_qspi_nor_init(const struct device *dev)
 	struct dma_block_config block_cfg = {0};
 	int ret;
 
+	ret = clock_control_on(data->clock.dev, (clock_control_subsys_t)&data->clock.id);
+	if (ret < 0) {
+		return ret;
+	}
+
 	if (!sf32lb_dma_is_ready_dt(&data->dma)) {
 		return -ENODEV;
 	}
@@ -681,6 +688,7 @@ static __ramfunc int flash_sf32lb_mpi_qspi_nor_init(const struct device *dev)
 		.mpi = (MPI_TypeDef *)DT_INST_REG_ADDR_BY_NAME(n, ctrl),                                          \
 		.base = DT_INST_REG_ADDR_BY_NAME(n, nor),                                          \
 		.size = DT_PROP(DT_INST_CHILD(n, flash_0), size) / 8U,                             \
+		.clock = SF32LB_CLOCK_DT_INST_SPEC_GET(n),                                         \
 		.dma = SF32LB_DMA_DT_INST_SPEC_GET(n),                                             \
 		.lines = DT_INST_PROP_OR(n, sifli_lines, 1U),                                      \
 		.psclr = DT_INST_PROP(n, sifli_psclr),                                             \
@@ -714,3 +722,10 @@ static __ramfunc int flash_sf32lb_mpi_qspi_nor_init(const struct device *dev)
 			      &flash_sf32lb_mpi_qspi_nor_api);
 
 DT_INST_FOREACH_STATUS_OKAY(FLASH_SF32LB_MPI_QSPI_NOR_DEFINE)
+
+#define FLASH_SF32LB_MPI_QSPI_NOR_CHIP_DEFINE(n)                                                   \
+	DEVICE_DT_DEFINE(DT_INST_CHILD(n, flash_0), flash_sf32lb_mpi_qspi_nor_init, NULL,          \
+			&data##n, &config##n, PRE_KERNEL_1, CONFIG_FLASH_INIT_PRIORITY,           \
+			&flash_sf32lb_mpi_qspi_nor_api);
+
+DT_INST_FOREACH_STATUS_OKAY(FLASH_SF32LB_MPI_QSPI_NOR_CHIP_DEFINE)

@@ -548,6 +548,7 @@ static int bt_hci_sf32lb_send(const struct device *dev, struct net_buf *buf)
 static int bt_hci_sf32lb_open(const struct device *dev)
 {
 	const struct bt_sf32lb_config *cfg = dev->config;
+	struct bt_sf32lb_data *hci = dev->data;
 	k_tid_t tid;
 	int r;
 
